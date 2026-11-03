@@ -76,7 +76,16 @@ export class Game {
   }
 
   async init() {
-    await Promise.all([
+    // startup phases are timed with performance marks (visible in DevTools → Performance)
+    let last = 'start';
+    performance.mark('init:start');
+    const phase = (name: string) => {
+      performance.mark(`init:${name}`);
+      performance.measure(`init ${name}`, `init:${last}`, `init:${name}`);
+      last = name;
+    };
+    // fonts download while the renderer starts; only canvas text further down needs them
+    const fonts = Promise.all([
       document.fonts.load('600 20px "IBM Plex Mono"'),
       document.fonts.load('500 20px "IBM Plex Mono"'),
       document.fonts.load('italic 600 20px "Cormorant Garamond"'),
@@ -91,17 +100,16 @@ export class Game {
       autoDensity: true,
       preference: 'webgl',
       powerPreference: 'high-performance',
+      // input is handled with plain DOM events, so Pixi's per-pointer-move hit testing is pure overhead
+      eventFeatures: { move: false, globalMove: false, click: false, wheel: false },
     });
     this.canvas = this.app.canvas;
     document.getElementById('stage')!.appendChild(this.canvas);
-
-    BitmapFont.install({
-      name: 'dmg',
-      style: { fontFamily: 'IBM Plex Mono', fontSize: 44, fontWeight: '600', fill: 0xffffff, stroke: { color: 0x07060e, width: 7, join: 'round' } },
-      chars: [['0', '9'], ['A', 'Z'], '.+-!×◆ ', ['a', 'z']],
-      resolution: 2,
-    });
+    phase('renderer');
+    await fonts;
+    phase('fonts');
     textures();
+    phase('textures');
 
     this.bg = new Background();
     this.app.stage.addChild(this.sceneRoot);
@@ -109,6 +117,7 @@ export class Game {
     this.sceneRoot.filterArea = this.app.screen;
     this.tree = new TreeScene(this);
     this.sceneRoot.addChild(this.tree.view);
+    phase('scenes');
 
     const ui = document.getElementById('ui')!;
     this.hud = new TreeHud(ui);
@@ -140,6 +149,9 @@ export class Game {
       this.tree.recenter(true);
     }
     this.hud.sync(this.state, false, !anyAffordable(this.state));
+    phase('ui');
+    this.app.renderer.render(this.app.stage); // first frame: uploads textures, compiles shaders
+    phase('first-frame');
 
     // dtcap lets automated tests run in (near) real time on slow software renderers
     const cap = parseFloat(this.params.get('dtcap') ?? '') || 1 / 20;
@@ -151,7 +163,10 @@ export class Game {
 
     const boot = document.getElementById('boot')!;
     boot.classList.add('gone');
-    setTimeout(() => boot.remove(), 1000);
+    setTimeout(() => boot.remove(), 600);
+    // the damage-number font is only needed in a harvest: build it once the tree is up
+    const idle = window.requestIdleCallback ?? ((cb: () => void) => setTimeout(cb, 200));
+    idle(() => this.ensureDamageFont());
     gsap.from(this.hud.root.querySelectorAll('.hud-tl, .hud-tr, .chip, .hud-bottom'), { y: -16, opacity: 0, stagger: 0.08, duration: 0.7, delay: 0.3, ease: 'power3.out' });
   }
 
@@ -180,6 +195,19 @@ export class Game {
       this.hud.show(true);
       this.hud.sync(this.state);
     };
+  }
+
+  private damageFont = false;
+  /** Bitmap atlas for damage numbers. Built lazily: only harvests use it. */
+  private ensureDamageFont() {
+    if (this.damageFont) return;
+    this.damageFont = true;
+    BitmapFont.install({
+      name: 'dmg',
+      style: { fontFamily: 'IBM Plex Mono', fontSize: 44, fontWeight: '600', fill: 0xffffff, stroke: { color: 0x07060e, width: 7, join: 'round' } },
+      chars: [['0', '9'], ['A', 'Z'], '.+-!×◆ ', ['a', 'z']],
+      resolution: 2,
+    });
   }
 
   private renderResolution(): number {
@@ -345,6 +373,7 @@ export class Game {
   }
 
   private beginRun() {
+    this.ensureDamageFont();
     const stats = statsFor(this.state.levels);
     const hs = new HarvestScene(this, stats);
     this.harvest = hs;
