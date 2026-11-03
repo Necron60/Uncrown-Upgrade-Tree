@@ -1,0 +1,32 @@
+{
+  "name": "lumen-bloom",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A small upgrade-tree browser game: harvest light, grow a glowing constellation.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Necron60/Uncrown-Upgrade-Tree.git"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "sim": "vitest run tests/balance.test.ts --silent=false"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource/chakra-petch": "^5.3.0",
+    "gsap": "^3.15.0",
+    "pixi-filters": "^6.1.5",
+    "pixi.js": "^8.22.0"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.1.0"
+  }
+}
