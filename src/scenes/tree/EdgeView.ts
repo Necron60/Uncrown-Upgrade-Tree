@@ -127,8 +127,8 @@ export class EdgeView {
         }
       }
       if (!started) break;
-      line.stroke({ width: active ? 3.2 : 2, color: active ? lerpColor(col, 0xffffff, 0.2) : col, alpha: active ? 0.95 : 0.38, cap: 'round', join: 'round' });
-      glow.stroke({ width: active ? 13 : 7, color: col, alpha: active ? 0.2 : 0.06, cap: 'round', join: 'round' });
+      line.stroke({ width: active ? 3 : 2, color: active ? lerpColor(col, 0xffffff, 0.1) : col, alpha: active ? 0.9 : 0.38, cap: 'round', join: 'round' });
+      glow.stroke({ width: active ? 10 : 7, color: col, alpha: active ? 0.11 : 0.05, cap: 'round', join: 'round' });
     }
 
     // hover highlight overlay (alpha animated in tick)

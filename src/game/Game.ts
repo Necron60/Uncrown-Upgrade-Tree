@@ -24,8 +24,9 @@ Filter.defaultOptions.antialias = 'inherit';
 
 const PARTICLE_DENSITY = { low: 0.35, medium: 0.65, high: 1 } as const;
 const BLOOM_OPTIONS: Record<Exclude<Bloom, 'off'>, ConstructorParameters<typeof AdvancedBloomFilter>[0]> = {
-  soft: { threshold: 0.6, bloomScale: 0.45, brightness: 1, blur: 5, quality: 4 },
-  full: { threshold: 0.5, bloomScale: 0.8, brightness: 1, blur: 7, quality: 5 },
+  // a high threshold keeps the glow on genuinely bright things (cores, sparks), not on whole regions
+  soft: { threshold: 0.7, bloomScale: 0.4, brightness: 1, blur: 5, quality: 4 },
+  full: { threshold: 0.62, bloomScale: 0.62, brightness: 1, blur: 7, quality: 5 },
 };
 
 export class Game {

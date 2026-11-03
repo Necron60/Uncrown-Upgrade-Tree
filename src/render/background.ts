@@ -62,10 +62,11 @@ export class Background {
     add(0, 0, 3.4, 0x3a2a8c, 0.75);
     add(-260, 180, 2.6, 0x16407a, 0.6);
     add(300, -200, 2.4, 0x4a1f6e, 0.55);
-    add(0, -620, 2.4, BRANCH_COLORS.force, 0.08, 'force');
-    add(620, 0, 2.4, BRANCH_COLORS.reach, 0.08, 'reach');
-    add(0, 620, 2.4, BRANCH_COLORS.flow, 0.08, 'flow');
-    add(-620, 0, 2.4, BRANCH_COLORS.fortune, 0.08, 'fortune');
+    // branch clouds sit far out behind their own branch, so they never pile up over the centre
+    add(0, -1050, 2.0, BRANCH_COLORS.force, 0.04, 'force');
+    add(1050, 0, 2.0, BRANCH_COLORS.reach, 0.04, 'reach');
+    add(0, 1050, 2.0, BRANCH_COLORS.flow, 0.04, 'flow');
+    add(-1050, 0, 2.0, BRANCH_COLORS.fortune, 0.04, 'fortune');
 
     this.starPc = new ParticleContainer({
       texture: tex.dot,
@@ -99,7 +100,8 @@ export class Background {
 
   /** 0..1 investment per branch → nebula brightness */
   setBranchGlow(branch: Branch, amount: number) {
-    for (const n of this.nebs) if (n.branch === branch) n.target = 0.08 + amount * 0.5;
+    // additive clouds add up toward white, so keep them a faint tint even when fully invested
+    for (const n of this.nebs) if (n.branch === branch) n.target = 0.04 + amount * 0.16;
   }
 
   update(dt: number, camX: number, camY: number, zoom: number) {
