@@ -168,7 +168,7 @@ export class HarvestScene {
     const first = Math.min(this.st.maxShards, 6);
     for (let i = 0; i < first; i++) this.after(0.15 + i * 0.07, () => this.spawn());
     audio.whoosh();
-    this.game.hhud.showBanner('HARVEST', this.game.state.lifetime.runs === 0 ? 'Move your lens over the shards' : '', 'rgba(120,220,255,0.9)');
+    this.game.hhud.showBanner('The Harvest', this.game.state.lifetime.runs === 0 ? 'move your lens over the shards' : '', 'rgba(150,220,255,0.7)');
     // lens materialises
     this.lensLayer.scale.set(0);
     this.lensLayer.pivot.set(0, 0);
@@ -217,7 +217,7 @@ export class HarvestScene {
     this.fx.emit({ x: s.x, y: s.y, texture: tex.star4, count: 1, color: 0xffffff, speed: [0, 0], life: [0.35, 0.35], size: [type === 'heart' ? 1.6 : 0.7, 0.7], sizeEnd: 0, spin: [2, 3] });
     this.fx.emit({ x: s.x, y: s.y, texture: tex.dot, count: type === 'heart' ? 30 : 6, color: s.color, speed: [20, 90], life: [0.3, 0.6], size: [0.15, 0.3] });
     if (type === 'heart') {
-      this.game.hhud.showBanner('HEART CRYSTAL', 'Shatter it before time runs out', 'rgba(255,77,109,0.9)');
+      this.game.hhud.showBanner('A Heart Crystal', 'shatter it before the night ends', 'rgba(255,77,109,0.8)');
       audio.special('heart');
       this.shake.add(0.3);
     }
@@ -595,7 +595,7 @@ export class HarvestScene {
             this.overtimeUsed = true;
             this.inOvertime = true;
             this.overtimeLeft = st.overtime;
-            this.game.hhud.showBanner('LAST LIGHT', 'Double damage', 'rgba(255,170,80,0.95)');
+            this.game.hhud.showBanner('Last Light', 'double damage', 'rgba(255,170,80,0.85)');
             this.game.flash(0.35, 0.05, 0.4, '#ffb36b');
             this.shake.add(0.3);
           } else this.end();

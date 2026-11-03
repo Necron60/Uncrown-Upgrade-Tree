@@ -1,9 +1,9 @@
 import gsap from 'gsap';
-import { Application, BitmapFont, Container } from 'pixi.js';
+import { Application, BitmapFont, Container, Filter } from 'pixi.js';
 import { AdvancedBloomFilter } from 'pixi-filters/advanced-bloom';
 import { loadGame, newGame, saveGame, wipeSave, type GameState } from '../core/state';
 import { hexToCss } from '../core/math';
-import { BRANCH_COLORS, NODES, NODE_MAP, PRISM_COLOR } from '../data/tree';
+import { NODES, NODE_MAP, PRISM_COLOR } from '../data/tree';
 import { Background } from '../render/background';
 import { Shake } from '../render/shake';
 import { textures } from '../render/textures';
@@ -14,6 +14,11 @@ import { TreeScene } from '../scenes/TreeScene';
 import { Ending, HarvestHud, SettingsPanel, Summary, Tooltip, TreeHud, colorOf, type RunResult } from '../ui/ui';
 
 type Mode = 'tree' | 'transition' | 'harvest' | 'summary' | 'finale';
+
+// Pixi renders filters at resolution 1 without antialiasing by default. The bloom filter wraps
+// the whole scene, so on HiDPI screens everything came out at half resolution and jagged.
+Filter.defaultOptions.resolution = 'inherit';
+Filter.defaultOptions.antialias = 'inherit';
 
 export class Game {
   readonly app = new Application();
@@ -51,9 +56,10 @@ export class Game {
 
   async init() {
     await Promise.all([
-      document.fonts.load('700 20px "Chakra Petch"'),
-      document.fonts.load('600 20px "Chakra Petch"'),
-      document.fonts.load('400 14px "Inter Variable"'),
+      document.fonts.load('600 20px "IBM Plex Mono"'),
+      document.fonts.load('500 20px "IBM Plex Mono"'),
+      document.fonts.load('italic 600 20px "Cormorant Garamond"'),
+      document.fonts.load('500 20px "Cormorant Garamond"'),
     ]).catch(() => undefined);
 
     await this.app.init({
@@ -70,7 +76,7 @@ export class Game {
 
     BitmapFont.install({
       name: 'dmg',
-      style: { fontFamily: 'Chakra Petch', fontSize: 44, fontWeight: '700', fill: 0xffffff, stroke: { color: 0x07081a, width: 6, join: 'round' } },
+      style: { fontFamily: 'IBM Plex Mono', fontSize: 44, fontWeight: '600', fill: 0xffffff, stroke: { color: 0x07060e, width: 7, join: 'round' } },
       chars: [['0', '9'], ['A', 'Z'], '.+-!×◆ ', ['a', 'z']],
       resolution: 2,
     });
@@ -108,12 +114,13 @@ export class Game {
 
     // dtcap lets automated tests run in (near) real time on slow software renderers
     const cap = parseFloat(this.params.get('dtcap') ?? '') || 1 / 20;
+    if (this.params.has('dtcap')) gsap.ticker.lagSmoothing(0); // tests: UI tweens follow real time too
     this.app.ticker.add((tk) => this.update(Math.min(tk.deltaMS / 1000, cap)));
 
     const boot = document.getElementById('boot')!;
     boot.classList.add('gone');
     setTimeout(() => boot.remove(), 1000);
-    gsap.from(this.hud.root.querySelectorAll('.hud-tl, .hud-tr, .progress-chip, .hud-bottom'), { y: -16, opacity: 0, stagger: 0.08, duration: 0.7, delay: 0.3, ease: 'power3.out' });
+    gsap.from(this.hud.root.querySelectorAll('.hud-tl, .hud-tr, .chip, .hud-bottom'), { y: -16, opacity: 0, stagger: 0.08, duration: 0.7, delay: 0.3, ease: 'power3.out' });
   }
 
   // ───────────────────────────────────────────── ui wiring
@@ -223,7 +230,7 @@ export class Game {
       this.hud.sync(this.state, true, !anyAffordable(this.state));
       this.hud.lumen.bump(1.1);
       if (res.newLevel === 1 && (def.kind === 'major' || def.kind === 'synergy' || def.kind === 'keystone')) {
-        const label = def.kind === 'keystone' ? 'Keystone awakened' : def.kind === 'synergy' ? 'Synergy formed' : 'New mechanic';
+        const label = def.kind === 'keystone' ? 'a keystone awakens' : def.kind === 'synergy' ? 'a synergy forms' : 'a new power';
         this.hud.toast(`<span>${label}</span><b>${def.name}</b>`, colorOf(def));
       }
       this.tooltip.refresh(this.state);
@@ -298,9 +305,9 @@ export class Game {
     this.save();
     document.body.classList.remove('harvest');
     this.mode = 'summary';
-    this.summary.show(r, record, s.lumen);
+    this.summary.show(r, record, s.lumen, L.runs);
     if (firstPrism) {
-      gsap.delayedCall(1.4, () => this.hud.toast(`<span>Discovered</span><b>Prism</b><span>the rarest light</span>`, hexToCss(PRISM_COLOR), 3.5));
+      gsap.delayedCall(1.4, () => this.hud.toast(`<span>you found</span><b>Prism</b><span>the rarest light</span>`, hexToCss(PRISM_COLOR), 3.5));
     }
   }
 
@@ -328,7 +335,7 @@ export class Game {
     gsap.to(el, { opacity: 0, duration: 0.7, ease: 'power2.out' });
     this.mode = 'tree';
     if (this.state.lifetime.runs === 1) {
-      gsap.delayedCall(1, () => this.hud.toast(`<span>Spend</span><b>Lumen</b><span>on glowing nodes to grow the Bloom</span>`, hexToCss(BRANCH_COLORS.fortune), 4));
+      gsap.delayedCall(1, () => this.hud.toast(`<span>spend your</span><b>Lumen</b><span>on a lit node to grow the Bloom</span>`, 'var(--gold)', 4));
     }
   }
 
