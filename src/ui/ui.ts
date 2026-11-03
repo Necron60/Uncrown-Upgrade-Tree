@@ -123,7 +123,7 @@ export class TreeHud {
 
     const bottom = h('div', 'hud-bottom');
     const row = h('div', 'hud-row');
-    this.harvestBtn = h('button', 'rite', '<span class="gem"></span>Begin the Harvest<kbd>space</kbd><span class="gem"></span>');
+    this.harvestBtn = h('button', 'rite', '<span class="shine">Begin the Harvest</span><kbd>space</kbd>');
     this.awakenBtn = h('button', 'rite awaken');
     this.hint = h('div', 'hint');
     row.append(this.harvestBtn, this.awakenBtn);
@@ -132,6 +132,15 @@ export class TreeHud {
     this.toasts = h('div', 'toasts');
     this.root.append(tl, tr, this.chip, bottom, this.toasts);
     host.append(this.root);
+
+    // the light under the cursor on buttons and dialogs reads these (percentages, so UI zoom does not matter)
+    document.addEventListener('pointermove', (e) => {
+      const el = (e.target as Element).closest?.<HTMLElement>('.text-btn, .icon-btn, .rite, .modal');
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      el.style.setProperty('--mx', `${((e.clientX - r.left) / r.width) * 100}%`);
+      el.style.setProperty('--my', `${((e.clientY - r.top) / r.height) * 100}%`);
+    });
   }
 
   setMuted(muted: boolean) {
@@ -160,14 +169,14 @@ export class TreeHud {
     const aw = NODE_MAP.awaken;
     const awOn = nodeState(aw, state.levels) === 'available' && !state.awakened;
     this.awakenBtn.classList.toggle('on', awOn);
-    if (awOn) this.awakenBtn.innerHTML = `Awaken the Seed <span class="cost">${costHtml(nextCost(aw, state.levels), state)}</span>`;
+    if (awOn) this.awakenBtn.innerHTML = `<span class="shine">Awaken the Seed</span> <span class="cost">${costHtml(nextCost(aw, state.levels), state)}</span>`;
 
     if (state.lifetime.runs === 0) this.hint.innerHTML = 'Touch the <b>seed</b> to begin your first harvest';
     else if (urge) this.hint.innerHTML = 'Nothing within reach yet. Gather more light.';
     else this.hint.innerHTML = 'drag to wander · scroll to look closer · touch a lit node to grow it';
   }
 
-  toast(html: string, color = 'var(--gold)', duration = 2.6) {
+  toast(html: string, color = 'var(--accent)', duration = 2.6) {
     const t = h('div', 'toast', html);
     t.style.setProperty('--c', color);
     this.toasts.append(t);
@@ -315,6 +324,7 @@ export class HarvestHud {
   private comboMeter: HTMLElement;
   private kills: HTMLElement;
   private banner: HTMLElement;
+  readonly settingsBtn: HTMLButtonElement;
   private lastCombo = 0;
 
   constructor(host: HTMLElement) {
@@ -342,7 +352,10 @@ export class HarvestHud {
 
     this.kills = h('div', 'kills', 'shards broken<b>0</b>');
     this.banner = h('div', 'banner');
-    this.root.append(tl, this.timer, this.combo, this.kills, this.banner);
+    this.settingsBtn = h('button', 'icon-btn hh-settings', ICON.settings);
+    this.settingsBtn.title = 'Pause and settings (Esc)';
+    this.settingsBtn.setAttribute('aria-label', this.settingsBtn.title);
+    this.root.append(tl, this.timer, this.combo, this.kills, this.banner, this.settingsBtn);
     host.append(this.root);
     gsap.set(this.root, { autoAlpha: 0 });
   }
@@ -369,7 +382,7 @@ export class HarvestHud {
   }
 
   addTimeFx() {
-    gsap.fromTo(this.tText, { color: '#f1d79a', scale: 1.15 }, { color: '#ece3cf', scale: 1, duration: 0.5, ease: 'back.out(3)' });
+    gsap.fromTo(this.tText, { color: '#8fd3ff', scale: 1.15 }, { color: '#ececf1', scale: 1, duration: 0.5, ease: 'back.out(3)' });
   }
 
   setCombo(stacks: number, bonus: number, frac: number) {
@@ -386,7 +399,7 @@ export class HarvestHud {
 
   showBanner(text: string, sub = '', color = '') {
     this.banner.innerHTML = `${text}${sub ? `<small>${sub}</small>` : ''}`;
-    this.banner.style.setProperty('--glow', color || 'rgba(241, 215, 154, 0.55)');
+    this.banner.style.setProperty('--glow', color || 'rgba(184, 168, 255, 0.6)');
     gsap.killTweensOf(this.banner);
     gsap.timeline()
       .fromTo(this.banner, { opacity: 0, y: 10, letterSpacing: '0.2em' }, { opacity: 1, y: 0, letterSpacing: '0.04em', duration: 0.7, ease: 'expo.out' })
@@ -444,14 +457,14 @@ export class Summary {
       <div class="sum-main">
         <div class="big">${GLYPH.lumen}<span class="lv">0</span></div>
         <div class="sub">lumen gathered</div>
-        ${record ? '<div class="record">◆ a new record ◆</div>' : ''}
+        ${record ? '<div class="record">New record</div>' : ''}
       </div>
       <div class="rule orn"></div>
       <div class="sum-rows">${rows}</div>
       <div class="rule"></div>
       <div class="sum-actions">
         <button class="text-btn again">Again<kbd>r</kbd></button>
-        <button class="text-btn primary cont">To the Bloom<kbd>space</kbd></button>
+        <button class="text-btn primary cont"><span class="shine">To the Bloom</span><kbd>space</kbd></button>
       </div>`;
     this.modal.querySelector('.cont')!.addEventListener('click', () => this.onContinue());
     this.modal.querySelector('.again')!.addEventListener('click', () => this.onAgain());
@@ -497,6 +510,7 @@ export class SettingsPanel {
   open = false;
   private tab: Tab = 'graphics';
   private state!: GameState;
+  private endRun: (() => void) | null = null;
 
   constructor(host: HTMLElement) {
     this.wrap.append(this.modal);
@@ -504,8 +518,10 @@ export class SettingsPanel {
     this.wrap.addEventListener('pointerdown', (e) => { if (e.target === this.wrap) this.hide(); });
   }
 
-  show(state: GameState) {
+  /** endRun: when given (opened from a harvest), the footer offers to end the run early. */
+  show(state: GameState, endRun: (() => void) | null = null) {
     this.state = state;
+    this.endRun = endRun;
     this.open = true;
     this.render();
     this.wrap.classList.add('on');
@@ -554,8 +570,17 @@ export class SettingsPanel {
       case 'sound':
         return [
           row('Master volume', slider('volume', s.volume)),
-          row('Harvest sounds', slider('sfxVolume', s.sfxVolume), 'Pulses, shattering crystals, lightning and novas.'),
-          row('Interface sounds', slider('uiVolume', s.uiVolume), 'Hovering, growing nodes and menu clicks.'),
+          '<div class="rule"></div>',
+          row('Music', slider('musicVolume', s.musicVolume)),
+          row('Soundtrack', choice('musicTrack', [['all', 'all'], ['adrift', 'Adrift'], ['hymn', 'Hymn'], ['cirrus', 'Cirrus'], ['hope', 'Hope']], s.musicTrack), 'By Scott Buckley (scottbuckley.com.au), CC-BY 4.0. "All" plays the four pieces in turn.'),
+          row('Music in the harvest', choice('harvestMusic', [['full', 'full'], ['soft', 'soft'], ['off', 'off']], s.harvestMusic), 'Lower or silence the music while you harvest.'),
+          '<div class="rule"></div>',
+          row('Shattering', slider('sfxVolume', s.sfxVolume), 'Crystals breaking in a harvest.'),
+          row('Special shards', slider('specialVolume', s.specialVolume), 'Chimes and gongs for gold, time, prism and heart crystals.'),
+          row('Interface', slider('uiVolume', s.uiVolume), 'Growing nodes, menu clicks and the finale.'),
+          row('Hover sounds', toggle('hoverSounds', s.hoverSounds), 'The soft note when the cursor finds a node.'),
+          row('Reverb', slider('reverb', s.reverb), 'How long sounds ring out into the void.'),
+          '<div class="rule"></div>',
           row('Silent in background', toggle('muteHidden', s.muteHidden), 'Pause all sound while the tab is hidden.'),
         ].join('');
       case 'interface':
@@ -587,10 +612,9 @@ export class SettingsPanel {
     this.modal.innerHTML = `
       <div class="title">Settings</div>
       <div class="tabs">${tabs}</div>
-      <div class="rule"></div>
       <div class="settings-body">${this.body()}</div>
       <div class="rule"></div>
-      <div class="foot"><button class="text-btn close">Close<kbd>esc</kbd></button></div>`;
+      <div class="foot">${this.endRun ? '<button class="text-btn danger end">End harvest</button>' : ''}<button class="text-btn close">${this.endRun ? 'Resume' : 'Close'}<kbd>esc</kbd></button></div>`;
     this.bind();
   }
 
@@ -603,11 +627,13 @@ export class SettingsPanel {
       case 'background': s.background = v as Settings['background']; break;
       case 'darkness': s.darkness = v as Settings['darkness']; break;
       case 'antialias': s.antialias = v as Settings['antialias']; break;
+      case 'musicTrack': s.musicTrack = v as Settings['musicTrack']; break;
+      case 'harvestMusic': s.harvestMusic = v as Settings['harvestMusic']; break;
       case 'resolution': case 'fpsCap': case 'uiScale':
-      case 'volume': case 'sfxVolume': case 'uiVolume': case 'shake': case 'flashes':
+      case 'volume': case 'sfxVolume': case 'specialVolume': case 'uiVolume': case 'musicVolume': case 'reverb': case 'shake': case 'flashes':
         s[k] = Number(v); break;
       case 'showFps': case 'muteHidden': case 'reducedMotion': case 'cameraFx': case 'ripples':
-      case 'slowmo': case 'ambient': case 'damageNumbers': case 'hints': case 'skipSummary':
+      case 'slowmo': case 'ambient': case 'damageNumbers': case 'hints': case 'skipSummary': case 'hoverSounds':
         s[k] = v === '1'; break;
     }
     this.onChange(s);
@@ -640,6 +666,11 @@ export class SettingsPanel {
       });
     }
     this.modal.querySelector('.close')!.addEventListener('click', () => this.hide());
+    this.modal.querySelector('.end')?.addEventListener('click', () => {
+      const end = this.endRun;
+      this.hide();
+      end?.();
+    });
   }
 }
 
@@ -661,7 +692,7 @@ export class Ending {
         <div><b>${fmt(L.shardsBroken)}</b><span>shards</span></div>
         <div><b>${fmt(L.lumenEarned)}</b><span>lumen</span></div>
       </div>
-      <button class="rite"><span class="gem"></span>Keep blooming<span class="gem"></span></button></div>`;
+      <button class="rite"><span class="shine">Keep blooming</span></button></div>`;
     this.el.querySelector('button')!.addEventListener('click', () => {
       gsap.to(this.el, { opacity: 0, duration: 0.6, onComplete: () => { this.el.classList.remove('on'); this.onContinue(); } });
     });

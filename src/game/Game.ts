@@ -22,6 +22,7 @@ type Mode = 'tree' | 'transition' | 'harvest' | 'summary' | 'finale';
 Filter.defaultOptions.resolution = 'inherit';
 Filter.defaultOptions.antialias = 'inherit';
 
+const HARVEST_MUSIC = { full: 1, soft: 0.4, off: 0 } as const;
 const PARTICLE_DENSITY = { low: 0.35, medium: 0.65, high: 1 } as const;
 const BLOOM_OPTIONS: Record<Exclude<Bloom, 'off'>, BloomOptions> = {
   // a high threshold keeps the glow on genuinely bright things (cores, sparks), not on whole regions
@@ -111,7 +112,7 @@ export class Game {
     textures();
     phase('textures');
 
-    this.bg = new Background();
+    this.bg = new Background(this.app.renderer);
     this.app.stage.addChild(this.sceneRoot);
     this.sceneRoot.addChild(this.bg.view);
     this.sceneRoot.filterArea = this.app.screen;
@@ -177,7 +178,8 @@ export class Game {
     window.addEventListener('keydown', unlockAudio);
     this.hud.harvestBtn.addEventListener('click', () => { audio.click(); void this.startHarvest(); });
     this.hud.centerBtn.addEventListener('click', () => { audio.click(); this.tree.recenter(); });
-    this.hud.settingsBtn.addEventListener('click', () => { audio.click(); this.settings.show(this.state); });
+    this.hud.settingsBtn.addEventListener('click', () => { audio.click(); this.openSettings(); });
+    this.hhud.settingsBtn.addEventListener('click', () => { audio.click(); this.openSettings(); });
     this.hud.muteBtn.addEventListener('click', () => this.toggleMute());
     this.hud.awakenBtn.addEventListener('click', () => void this.awaken());
     this.summary.onContinue = () => void this.leaveHarvest(false);
@@ -195,6 +197,16 @@ export class Game {
       this.hud.show(true);
       this.hud.sync(this.state);
     };
+  }
+
+  /** From a harvest the run pauses while the panel is open, and the panel can end it early. */
+  private openSettings() {
+    this.settings.show(this.state, this.mode === 'harvest' ? () => this.harvest?.forceEnd() : null);
+  }
+
+  /** Music level for the current scene: the Music-in-the-harvest setting applies while a harvest is on screen. */
+  private syncMusic() {
+    audio.setMusicDuck(this.harvest ? HARVEST_MUSIC[this.state.settings.harvestMusic] : 1);
   }
 
   private damageFont = false;
@@ -223,12 +235,19 @@ export class Game {
     audio.setVolume(s.volume);
     audio.setBus('game', s.sfxVolume);
     audio.setBus('ui', s.uiVolume);
+    audio.setBus('music', s.musicVolume);
+    audio.setBus('gems', s.specialVolume);
+    audio.setReverb(s.reverb);
+    audio.setHoverSounds(s.hoverSounds);
+    audio.setTrack(s.musicTrack);
+    this.syncMusic();
     this.hud.setMuted(s.volume <= 0);
 
     // motion
     this.shake.intensity = m.shake;
     NodeView.ambient = m.ambient;
     this.bg.ambient = m.ambient;
+    document.body.classList.toggle('still', !m.ambient);
 
     // graphics
     if (s.bloom === 'off') this.sceneRoot.filters = [];
@@ -279,10 +298,10 @@ export class Game {
       if (k === ' ' || k === 'enter') { e.preventDefault(); void this.startHarvest(); }
       else if (k === 'c') this.tree.recenter();
       else if (k === 'm') this.toggleMute();
-      else if (k === 'escape') this.settings.show(this.state);
+      else if (k === 'escape') this.openSettings();
       else if (k === 'l' && this.params.has('dev')) { this.state.lumen += 1e5; this.state.prism += 50; this.walletChanged(); }
     } else if (this.mode === 'harvest') {
-      if (k === 'escape') this.harvest?.forceEnd();
+      if (k === 'escape') this.openSettings();
     } else if (this.mode === 'summary' && this.summary.isOpen) {
       if (k === ' ' || k === 'enter') { e.preventDefault(); void this.leaveHarvest(false); }
       else if (k === 'r') void this.leaveHarvest(true);
@@ -386,6 +405,7 @@ export class Game {
     hs.resize(this.app.screen.width, this.app.screen.height);
     this.sceneRoot.addChild(hs.view);
     hs.onEnd = (r) => this.onRunEnd(r);
+    this.syncMusic();
     document.body.classList.add('harvest');
     this.hhud.show(true, stats.comboPerKill > 0, stats.prismChance > 0 || stats.heart > 0);
     this.hhud.setTimer(stats.duration, stats.duration, false);
@@ -431,6 +451,7 @@ export class Game {
     await new Promise<void>((res) => gsap.to(el, { opacity: 1, duration: 0.22, ease: 'power2.in', onComplete: res }));
     this.harvest?.destroy();
     this.harvest = null;
+    this.syncMusic();
     if (again) {
       this.beginRun();
       return;
@@ -469,7 +490,7 @@ export class Game {
       this.bg.update(dt, cam.x, cam.y, cam.zoom);
     }
     this.tree.update(dt);
-    this.harvest?.update(dt);
+    if (!(this.mode === 'harvest' && this.settings.open)) this.harvest?.update(dt); // paused under the settings
     this.shake.update(dt);
     this.tree.view.position.set(this.shake.x, this.shake.y);
 

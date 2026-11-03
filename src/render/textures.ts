@@ -21,8 +21,14 @@ export interface TextureBank {
   star4: Texture;     // 4-point twinkle
   nebula: Texture[];  // big soft clouds
   shard: Record<number, Texture>; // faceted crystal by number of sides
+  shardSheen: Record<number, [Texture, Texture]>; // white facet highlights for two light directions (cross-faded)
+  shardCracks: Record<number, Texture>; // glowing fracture lines inside the silhouette
   shardFlash: Record<number, Texture>; // flat white silhouette
 }
+
+/** Size of the generated shard art, and the radius of the gem inside it. */
+export const SHARD_TEX = 192;
+export const SHARD_R = SHARD_TEX * 0.44;
 
 function canvas(w: number, h = w): [HTMLCanvasElement, CanvasRenderingContext2D] {
   const c = document.createElement('canvas');
@@ -53,18 +59,31 @@ function makeSpark(): Texture {
   return Texture.from(c);
 }
 
+/** A splinter of crystal: a shaded sliver with one bright cut edge. */
 function makeFrag(): Texture {
-  const [c, ctx] = canvas(32);
-  const g = ctx.createLinearGradient(4, 4, 28, 28);
+  const [c, ctx] = canvas(48);
+  const pts: [number, number][] = [[24, 3], [44, 38], [8, 44]];
+  const path = () => {
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.closePath();
+  };
+  const g = ctx.createLinearGradient(14, 8, 36, 44);
   g.addColorStop(0, 'rgba(255,255,255,1)');
-  g.addColorStop(1, 'rgba(255,255,255,0.45)');
+  g.addColorStop(0.55, 'rgba(255,255,255,0.6)');
+  g.addColorStop(1, 'rgba(255,255,255,0.3)');
   ctx.fillStyle = g;
-  ctx.beginPath();
-  ctx.moveTo(16, 2);
-  ctx.lineTo(30, 26);
-  ctx.lineTo(6, 30);
-  ctx.closePath();
+  path();
   ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(...pts[0]);
+  ctx.lineTo(...pts[2]);
+  ctx.stroke();
   return Texture.from(c);
 }
 
@@ -138,73 +157,151 @@ function polyPoints(sides: number, r: number, cx: number, cy: number, rot = -Mat
   return pts;
 }
 
-/** A faceted gem: each facet triangle gets its own shade so it reads as 3D. */
-function makeShard(sides: number, flash: boolean): Texture {
-  const s = 128;
+type Pt = [number, number];
+type Vec3 = [number, number, number];
+interface Facet { pts: Pt[]; tilt: number; ang: number }
+
+const unit = (x: number, y: number, z: number): Vec3 => {
+  const l = Math.hypot(x, y, z);
+  return [x / l, y / l, z / l];
+};
+const KEY_LIGHT = unit(-0.55, -0.7, 0.55); // from the top-left, toward the viewer
+const SHEEN_LIGHTS: [Vec3, Vec3] = [unit(-0.75, -0.35, 0.45), unit(0.6, 0.55, 0.5)];
+
+/** How brightly a facet (tilted away from the viewer by `tilt`, facing `ang`) catches light from `L`. */
+function lit(f: Facet, L: Vec3): number {
+  const s = Math.sin(f.tilt);
+  return Math.max(0, s * Math.cos(f.ang) * L[0] + s * Math.sin(f.ang) * L[1] + Math.cos(f.tilt) * L[2]);
+}
+
+/**
+ * A brilliant-style cut seen from above: rim triangles at the girdle, kite (bezel) facets split in two,
+ * star facets around the table, and the flat table in the middle. Steeper facets sit further out.
+ */
+function gemFacets(sides: number, c: number, R: number): Facet[] {
+  const mR = R * Math.cos(Math.PI / sides) * 0.86; // stays inside the outline even for triangles
+  const O = polyPoints(sides, R, c, c);
+  const M = polyPoints(sides, mR, c, c, -Math.PI / 2 + Math.PI / sides);
+  const T = polyPoints(sides, mR * 0.58, c, c);
+  const out: Facet[] = [];
+  const add = (pts: Pt[], tilt: number) => {
+    const mx = pts.reduce((s, p) => s + p[0], 0) / pts.length, my = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+    out.push({ pts, tilt, ang: Math.atan2(my - c, mx - c) });
+  };
+  for (let i = 0; i < sides; i++) {
+    const j = (i + 1) % sides, h = (i + sides - 1) % sides;
+    add([O[i], O[j], M[i]], 1.05);
+    add([O[i], M[h], T[i]], 0.72);
+    add([O[i], T[i], M[i]], 0.72);
+    add([T[i], T[j], M[i]], 0.38);
+  }
+  add(T, 0);
+  return out;
+}
+
+const tracePath = (ctx: CanvasRenderingContext2D, pts: Pt[]) => {
+  ctx.beginPath();
+  pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+  ctx.closePath();
+};
+
+/** The gem body, white so it can be tinted: every facet shaded by the key light, lit from within. */
+function makeShard(sides: number): Texture {
+  const s = SHARD_TEX, cx = s / 2;
   const [c, ctx] = canvas(s);
-  const cx = s / 2, cy = s / 2, R = s * 0.44;
-  const outer = polyPoints(sides, R, cx, cy);
-  const inner = polyPoints(sides, R * 0.42, cx - R * 0.06, cy - R * 0.08, -Math.PI / 2 + 0.25);
-  if (flash) {
-    ctx.fillStyle = '#fff';
-    ctx.beginPath();
-    outer.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-    ctx.closePath();
-    ctx.fill();
-    return Texture.from(c);
-  }
-  const light = (a: number) => 0.55 + 0.45 * Math.max(0, Math.cos(a + 2.2)); // light from top-left
-  for (let i = 0; i < sides; i++) {
-    const [x0, y0] = outer[i];
-    const [x1, y1] = outer[(i + 1) % sides];
-    const [ix0, iy0] = inner[i];
-    const [ix1, iy1] = inner[(i + 1) % sides];
-    const mid = Math.atan2((y0 + y1) / 2 - cy, (x0 + x1) / 2 - cx);
-    const v = Math.round(255 * light(mid));
-    ctx.fillStyle = `rgb(${v},${v},${v})`;
-    ctx.beginPath();
-    ctx.moveTo(x0, y0);
-    ctx.lineTo(x1, y1);
-    ctx.lineTo(ix1, iy1);
-    ctx.lineTo(ix0, iy0);
-    ctx.closePath();
+  const facets = gemFacets(sides, cx, SHARD_R);
+  let seed = sides * 7919;
+  const jitter = () => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5) * 0.16;
+  for (const f of facets) {
+    const v = Math.min(1, 0.28 + 0.72 * lit(f, KEY_LIGHT) + jitter());
+    // each facet darkens slightly toward the girdle, which reads as depth
+    const [ox, oy] = f.pts[0];
+    const mx = f.pts.reduce((a, p) => a + p[0], 0) / f.pts.length, my = f.pts.reduce((a, p) => a + p[1], 0) / f.pts.length;
+    const g = ctx.createLinearGradient(mx, my, ox, oy);
+    const shade = (k: number) => `rgb(${Math.round(255 * v * k)},${Math.round(255 * v * k)},${Math.round(255 * v * k)})`;
+    g.addColorStop(0, shade(1));
+    g.addColorStop(1, shade(0.68));
+    ctx.fillStyle = g;
+    tracePath(ctx, f.pts);
     ctx.fill();
   }
-  // table (top facet)
-  const tg = ctx.createLinearGradient(cx - R * 0.4, cy - R * 0.4, cx + R * 0.3, cy + R * 0.3);
-  tg.addColorStop(0, '#ffffff');
-  tg.addColorStop(1, '#b8b8b8');
-  ctx.fillStyle = tg;
-  ctx.beginPath();
-  inner.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-  ctx.closePath();
-  ctx.fill();
-  // facet edges
-  ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-  ctx.lineWidth = 2;
   ctx.lineJoin = 'round';
-  ctx.beginPath();
-  outer.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-  ctx.closePath();
-  ctx.stroke();
-  ctx.strokeStyle = 'rgba(255,255,255,0.45)';
-  ctx.lineWidth = 1.2;
-  for (let i = 0; i < sides; i++) {
-    ctx.beginPath();
-    ctx.moveTo(outer[i][0], outer[i][1]);
-    ctx.lineTo(inner[i][0], inner[i][1]);
+  ctx.strokeStyle = 'rgba(255,255,255,0.32)';
+  ctx.lineWidth = 1;
+  for (const f of facets) {
+    tracePath(ctx, f.pts);
     ctx.stroke();
   }
-  ctx.beginPath();
-  inner.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-  ctx.closePath();
+  // light from within, then a bright rim
+  ctx.globalCompositeOperation = 'lighter';
+  const core = ctx.createRadialGradient(cx, cx, 0, cx, cx, SHARD_R * 0.7);
+  core.addColorStop(0, 'rgba(255,255,255,0.16)');
+  core.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = core;
+  tracePath(ctx, polyPoints(sides, SHARD_R, cx, cx));
+  ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+  ctx.lineWidth = 2.5;
   ctx.stroke();
-  // specular glint
-  const sg = ctx.createRadialGradient(cx - R * 0.25, cy - R * 0.3, 0, cx - R * 0.25, cy - R * 0.3, R * 0.35);
-  sg.addColorStop(0, 'rgba(255,255,255,0.9)');
-  sg.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = sg;
-  ctx.fillRect(0, 0, s, s);
+  return Texture.from(c);
+}
+
+/** Only the facets that catch light L, in white: added on top and cross-faded so the light seems to move. */
+function makeSheen(sides: number, L: Vec3): Texture {
+  const s = SHARD_TEX;
+  const [c, ctx] = canvas(s);
+  for (const f of gemFacets(sides, s / 2, SHARD_R)) {
+    const a = Math.pow(lit(f, L), 9);
+    if (a < 0.02) continue;
+    ctx.fillStyle = `rgba(255,255,255,${a.toFixed(3)})`;
+    tracePath(ctx, f.pts);
+    ctx.fill();
+  }
+  return Texture.from(c);
+}
+
+/** Jagged fracture lines branching out from near the centre, clipped to the gem. */
+function makeCracks(sides: number): Texture {
+  const s = SHARD_TEX, cx = s / 2;
+  const [c, ctx] = canvas(s);
+  let seed = sides * 104729 + 17;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const branch = (x: number, y: number, ang: number, len: number, depth: number) => {
+    ctx.moveTo(x, y);
+    for (let left = len; left > 0; left -= 9) {
+      ang += (rnd() - 0.5) * 0.9;
+      x += Math.cos(ang) * 9;
+      y += Math.sin(ang) * 9;
+      ctx.lineTo(x, y);
+      if (depth < 2 && rnd() < 0.18) {
+        branch(x, y, ang + (rnd() < 0.5 ? 0.8 : -0.8), left * 0.5, depth + 1);
+        ctx.moveTo(x, y);
+      }
+    }
+  };
+  ctx.beginPath();
+  const n = 3 + sides;
+  for (let i = 0; i < n; i++) branch(cx + (rnd() - 0.5) * 10, cx + (rnd() - 0.5) * 10, (i / n) * TAU + rnd() * 0.6, SHARD_R * (0.75 + rnd() * 0.4), 0);
+  ctx.lineCap = ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+  ctx.lineWidth = 6;
+  ctx.stroke();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1.6;
+  ctx.stroke();
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.fillStyle = '#fff';
+  tracePath(ctx, polyPoints(sides, SHARD_R * 0.97, cx, cx));
+  ctx.fill();
+  return Texture.from(c);
+}
+
+function makeShardFlash(sides: number): Texture {
+  const [c, ctx] = canvas(SHARD_TEX);
+  ctx.fillStyle = '#fff';
+  tracePath(ctx, polyPoints(sides, SHARD_R, SHARD_TEX / 2, SHARD_TEX / 2));
+  ctx.fill();
   return Texture.from(c);
 }
 
@@ -296,10 +393,14 @@ let bank: TextureBank | null = null;
 export function textures(): TextureBank {
   if (bank) return bank;
   const shard: Record<number, Texture> = {};
+  const shardSheen: Record<number, [Texture, Texture]> = {};
+  const shardCracks: Record<number, Texture> = {};
   const shardFlash: Record<number, Texture> = {};
   for (const sides of [3, 4, 5, 6]) {
-    shard[sides] = makeShard(sides, false);
-    shardFlash[sides] = makeShard(sides, true);
+    shard[sides] = makeShard(sides);
+    shardSheen[sides] = [makeSheen(sides, SHEEN_LIGHTS[0]), makeSheen(sides, SHEEN_LIGHTS[1])];
+    shardCracks[sides] = makeCracks(sides);
+    shardFlash[sides] = makeShardFlash(sides);
   }
   bank = {
     glow: radial(128, [[0, 1], [0.15, 0.75], [0.4, 0.25], [0.7, 0.06], [1, 0]]),
@@ -318,6 +419,8 @@ export function textures(): TextureBank {
     star4: makeStar4(),
     nebula: [makeNebula(1), makeNebula(7), makeNebula(13)],
     shard,
+    shardSheen,
+    shardCracks,
     shardFlash,
   };
   return bank;

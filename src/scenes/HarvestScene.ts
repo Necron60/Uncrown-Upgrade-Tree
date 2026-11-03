@@ -1,6 +1,6 @@
 import gsap from 'gsap';
 import { BitmapText, Container, Graphics, Sprite } from 'pixi.js';
-import { TAU, chance, clamp, damp, dist2, lerp, rand } from '../core/math';
+import { TAU, chance, clamp, damp, dist2, lerp, lerpColor, rand } from '../core/math';
 import { fmt } from '../core/format';
 import type { Stats } from '../data/stats';
 import { PRISM_COLOR } from '../data/tree';
@@ -119,7 +119,6 @@ export class HarvestScene {
   private shownLumen = 0;
   private shownPrism = 0;
   private bumpT = 0;
-  private lastTick = -1;
   private later: { t: number; fn: () => void }[] = [];
   private motes: Mote[] = [];
   private motePool: Sprite[] = [];
@@ -194,7 +193,6 @@ export class HarvestScene {
     });
     const first = Math.min(this.st.maxShards, 6);
     for (let i = 0; i < first; i++) this.after(0.15 + i * 0.07, () => this.spawn());
-    audio.whoosh();
     this.game.hhud.showBanner('The Harvest', this.game.state.lifetime.runs === 0 && this.game.state.settings.hints ? 'move your lens over the shards' : '', 'rgba(150,220,255,0.7)');
     // lens materialises in place
     gsap.to(this, { lensIntro: 1, duration: 0.6, ease: 'back.out(2.2)' });
@@ -241,11 +239,6 @@ export class HarvestScene {
     const tex = textures();
     this.fx.emit({ x: s.x, y: s.y, texture: tex.star4, count: 1, color: 0xffffff, speed: [0, 0], life: [0.35, 0.35], size: [type === 'heart' ? 1.6 : 0.7, 0.7], sizeEnd: 0, spin: [2, 3] });
     this.fx.emit({ x: s.x, y: s.y, texture: tex.dot, count: type === 'heart' ? 30 : 6, color: s.color, speed: [20, 90], life: [0.3, 0.6], size: [0.15, 0.3] });
-    if (type === 'heart') {
-      this.game.hhud.showBanner('A Heart Crystal', 'shatter it before the night ends', 'rgba(255,77,109,0.8)');
-      audio.special('heart');
-      this.shake.add(0.3);
-    }
   }
 
   // ───────────────────────────────────────────── combat
@@ -258,7 +251,6 @@ export class HarvestScene {
     const dmg = this.pulseDamage();
     this.lensPulse = 1;
     this.spawnPulseRing(this.lens.x, this.lens.y, R, false);
-    audio.pulse();
     const r2 = (s: Shard, x: number, y: number, rr: number) => dist2(s.x, s.y, x, y) < (rr + s.r * 0.65) ** 2;
     const targets = this.shards.filter((s) => !s.dead && s.spawn > 0.3 && r2(s, this.lens.x, this.lens.y, R));
     for (const s of targets) this.damage(s, dmg, { canCrit: true, canArc: true });
@@ -284,7 +276,6 @@ export class HarvestScene {
     if (!o.quiet || crit) this.number(s.x + rand(-6, 6), s.y - s.r - 4, amount, crit);
     const tex = textures();
     this.fx.emit({ x: s.x, y: s.y, texture: tex.spark, count: crit ? 7 : 3, color: [s.color, 0xffffff], speed: [120, crit ? 420 : 260], life: [0.15, 0.35], size: [0.2, 0.35], drag: 4, stretch: 0.004, spread: s.r * 0.4 });
-    audio.hit(crit);
 
     if (s.hp <= 0) this.kill(s, { crit, depth: o.depth });
     else if (this.st.execute > 0 && s.type !== 'heart' && s.hp <= s.maxHp * this.st.execute) this.kill(s, { crit, executed: true, depth: o.depth });
@@ -314,7 +305,6 @@ export class HarvestScene {
       this.after(delay, () => {
         if (target.dead) return;
         this.drawArc(from.x, from.y, target.x, target.y);
-        audio.arc();
         this.damage(target, dmg, { canCrit: true, canArc: false });
       });
       cur = { x: best.x, y: best.y };
@@ -412,7 +402,11 @@ export class HarvestScene {
     if (big || this.heat < 10) {
       this.fx.emit({ x: s.x, y: s.y, texture: tex.glow, count: 1, color: s.color, speed: [0, 0], life: [0.24, 0.24], size: [(s.r * 3.4) / 128, (s.r * 3.4) / 128], sizeEnd: 1.4, alpha: big ? 0.9 * this.flashScale : 0.45 * calm });
       this.fx.emit({ x: s.x, y: s.y, texture: tex.ring, count: 1, color: s.color, speed: [0, 0], life: [0.32, 0.32], size: [(s.r * 2) / 256, (s.r * 2) / 256], sizeEnd: big ? 8 : 2.6, alpha: big ? 0.9 : 0.5 * calm });
+      // a star-flare where it broke
+      this.fx.emit({ x: s.x, y: s.y, texture: tex.flare4, count: 1, color: lerpColor(s.color, 0xffffff, 0.5), speed: [0, 0], life: [0.3, 0.3], size: [(s.r * 4.5) / 512, (s.r * 4.5) / 512], sizeEnd: 0.15, alpha: big ? 1 : 0.8 * calm, spin: [-1.5, 1.5] });
     }
+    // glitter that lingers and drifts after the splinters are gone
+    this.fx.emit({ x: s.x, y: s.y, texture: tex.dot, count: big ? 50 : 6 + s.tier * 5, color: [lerpColor(s.color, 0xffffff, 0.55), 0xffffff], speed: [12, big ? 160 : 70], life: [0.9, 2], size: [0.08, 0.2], drag: 1.4, spread: s.r * 0.6 });
     if (info.executed) {
       this.floatLabel(s.x + rand(-8, 8), s.y + 12, 'SHATTER', 0xffffff, 13);
       this.fx.emit({ x: s.x, y: s.y, texture: tex.star4, count: 1, color: 0xffffff, speed: [0, 0], life: [0.3, 0.3], size: [1.2, 1.2], sizeEnd: 0 });
@@ -449,7 +443,6 @@ export class HarvestScene {
         this.fx.emit({ x, y, texture: tex.ring, count: 1, color: 0xff9a4d, speed: [0, 0], life: [0.4, 0.4], size: [0.15, 0.15], sizeEnd: (R * 2) / 256 / 0.15 / 0.9, alpha: 0.7 * calmN });
         if (this.heat < 12) this.fx.emit({ x, y, texture: tex.glow, count: 1, color: 0xff7a3d, speed: [0, 0], life: [0.3, 0.3], size: [(R * 1.5) / 128, (R * 1.5) / 128], sizeEnd: 0.5, alpha: 0.25 * calmN });
         this.fx.emit({ x, y, texture: tex.spark, count: this.heat < 12 ? 14 : 5, color: [0xff9a4d, 0xffe0a0], speed: [200, 600], life: [0.2, 0.4], size: [0.3, 0.5], stretch: 0.004, drag: 3 });
-        audio.nova();
         this.shake.add(0.1);
         for (const o of this.shards) {
           if (o.dead || o === s) continue;
@@ -699,11 +692,6 @@ export class HarvestScene {
       } else {
         this.remaining -= dt;
         this.game.hhud.setTimer(this.remaining, Math.max(st.duration, this.remaining), false);
-        const whole = Math.ceil(this.remaining);
-        if (this.remaining <= 3.5 && whole !== this.lastTick && this.remaining > 0) {
-          this.lastTick = whole;
-          audio.tick(this.remaining < 2);
-        }
         if (this.remaining <= 0) {
           if (st.overtime > 0 && !this.overtimeUsed) {
             this.overtimeUsed = true;
@@ -831,7 +819,6 @@ export class HarvestScene {
         } else {
           this.shownLumen += m.amount;
           this.game.hhud.lumen.set(this.shownLumen, false);
-          audio.plink(this.combo);
         }
         if (this.bumpT <= 0) {
           (m.prism ? this.game.hhud.prism : this.game.hhud.lumen).bump(1.12);
@@ -880,7 +867,6 @@ export class HarvestScene {
   private end() {
     if (this.ended) return;
     this.ended = true;
-    audio.runEnd();
     if (this.game.motion.slowmo) gsap.to(this, { timeScale: 0.12, duration: 0.5, ease: 'power2.out' });
     this.game.hhud.setTimer(0, 1, this.inOvertime);
     // remaining shards dissolve

@@ -25,16 +25,16 @@ npm run typecheck
 | Bloom | click the seed / `Space` | begin a Harvest |
 | Bloom | `C` · double-click empty space · `M` | recenter · recenter · mute |
 | Harvest | move the mouse | steer the lens; it pulses automatically |
-| Harvest | `Esc` | end the run early (you keep what you gathered) |
+| Harvest | `Esc` · sliders icon | pause and open the settings; *End harvest* there ends the run early (you keep what you gathered) |
 | Summary | `Space` · `R` | back to the Bloom · harvest again |
 
 ## Settings
 
-Press `Esc` in the Bloom, or use the sliders icon. Every option saves automatically.
+Press `Esc` (in the Bloom or during a harvest, which pauses it), or use the sliders icon. Every option saves automatically.
 
 - **Graphics:** a low/medium/high preset; glow off/soft/full; render resolution 50–100%; particle amount; simple or rich background; darkness of the void (off/dim/deep); frame-rate cap (30/60/120/max); frame counter.
 - **Motion:** a *Reduced motion* master switch, plus individual control of screen-shake strength, camera moves (zooming into and out of the seed, opening and finale moves), distortion ripples, flash strength (below 50%, scene changes fade to dark instead of white), slow motion / hit-stop, and ambient motion. Your OS reduced-motion preference is respected on first launch.
-- **Sound:** master, harvest and interface volume; silence while the tab is hidden.
+- **Sound:** master volume; music volume, which piece plays (or all in turn) and how loud it is during a harvest; separate volumes for shattering, special shards and the interface; hover sounds on/off; reverb; silence while the tab is hidden.
 - **Interface:** interface size, damage numbers, hints, and skipping the harvest summary.
 - **Records:** lifetime stats, plus *Begin anew* to wipe your save.
 
@@ -44,8 +44,8 @@ Press `Esc` in the Bloom, or use the sliders icon. Every option saves automatica
 - **PixiJS 8** (WebGL) for rendering. All art is generated at runtime, so there are no image assets.
 - **GSAP** for every tween and timeline.
 - **pixi-filters**: bloom, plus shockwave ripples on keystones and the finale.
-- **Web Audio**: procedural sound with a pentatonic chime scale and a generated reverb.
-- **HTML/CSS** overlay for the HUD, tooltips and modals: an engraved star-atlas look (hairline gold rules, Cormorant Garamond + IBM Plex Mono).
+- **Web Audio**: a soundtrack by Scott Buckley (CC-BY 4.0, streamed) under calm CC0 sound effects (kalimba, soft vibraphone, marimba, chimes and drums from VCSL; a singing bowl and bubble pops from BigSoundBank) re-pitched onto a pentatonic scale, with a generated reverb. In a Harvest only breaking shards make a sound. Credits are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- **HTML/CSS** overlay for the HUD, tooltips and modals: quiet solid panels, one ice accent for state, gold only for Lumen; a system UI font for labels and numbers, Cormorant Garamond for names and titles.
 
 ## Project layout
 

@@ -1,8 +1,68 @@
-import { Container, Particle, ParticleContainer, Sprite } from 'pixi.js';
+import { Container, Mesh, MeshGeometry, Particle, ParticleContainer, RenderTexture, Shader, Sprite, type Renderer } from 'pixi.js';
 import { TAU, damp, pick, rand } from '../core/math';
 import { textures } from './textures';
 import type { Branch } from '../data/tree';
 import { BRANCH_COLORS } from '../data/tree';
+
+const NEBULA_VERT = `
+in vec2 aPosition;
+in vec2 aUV;
+out vec2 vUV;
+uniform mat3 uProjectionMatrix;
+uniform mat3 uWorldTransformMatrix;
+uniform mat3 uTransformMatrix;
+void main() {
+  mat3 mvp = uProjectionMatrix * uWorldTransformMatrix * uTransformMatrix;
+  gl_Position = vec4((mvp * vec3(aPosition, 1.0)).xy, 0.0, 1.0);
+  vUV = aUV;
+}`;
+
+/** Domain-warped fractal noise: gas that folds over itself as it drifts, cut by dark dust lanes. */
+const NEBULA_FRAG = `
+in vec2 vUV;
+out vec4 finalColor;
+uniform float uTime;
+uniform vec2 uAspect;
+uniform vec2 uCam;
+
+float hash(vec2 p) {
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+float noise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float fbm(vec2 p) {
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 5; i++) {
+    v += a * noise(p);
+    p = mat2(1.6, 1.2, -1.2, 1.6) * p + 7.3;
+    a *= 0.5;
+  }
+  return v;
+}
+void main() {
+  vec2 p = (vUV - 0.5) * uAspect * 2.2 + uCam;
+  float t = uTime;
+  vec2 q = vec2(fbm(p + vec2(0.0, 0.11 * t)), fbm(p + vec2(5.2, 1.3) - 0.08 * t));
+  vec2 r = vec2(fbm(p + 3.0 * q + vec2(1.7, 9.2) + 0.15 * t), fbm(p + 3.0 * q + vec2(8.3, 2.8) - 0.12 * t));
+  float n = fbm(p + 2.6 * r);
+
+  vec3 col = vec3(0.025, 0.020, 0.070);                                               // the void
+  col = mix(col, vec3(0.24, 0.10, 0.46), smoothstep(0.25, 0.75, n));                   // violet gas
+  col = mix(col, vec3(0.05, 0.33, 0.50), smoothstep(0.55, 1.05, length(q)) * 0.75);    // teal currents
+  col = mix(col, vec3(0.55, 0.15, 0.44), smoothstep(0.50, 0.80, r.y) * 0.55);          // magenta embers
+  col += vec3(0.65, 0.55, 0.95) * pow(smoothstep(0.50, 0.85, n), 2.0) * 0.35;          // filaments where folds pile up
+  col *= 1.0 - smoothstep(0.45, 0.70, fbm(p * 2.4 - r * 1.7 + 4.0)) * 0.5;              // dust lanes
+  col *= mix(0.4, 1.0, smoothstep(1.4, 0.25, length((vUV - 0.5) * uAspect * 1.6)));    // vignette
+  finalColor = vec4(col, 1.0);
+}`;
+const NEBULA_SCALE = 0.5; // the gas is soft: rendering it at half resolution looks the same at a quarter of the cost
+const NEBULA_FPS = 30; // it drifts slowly, so it does not need every frame
+const NEBULA_SPEED = 0.5;
 
 interface Star {
   p: Particle;
@@ -27,9 +87,15 @@ interface Neb {
 const LAYER_FACTOR = [0.03, 0.08, 0.16];
 const STAR_COLORS = [0xffffff, 0xdfe8ff, 0xbfd4ff, 0xffe9c4, 0xc8f4ff];
 
-/** Parallax starfield + soft nebula clouds that react to tree investment. */
+/** A living nebula (shader), a parallax starfield and soft clouds that react to tree investment. */
 export class Background {
   readonly view = new Container();
+  private nebRT = RenderTexture.create({ width: 2, height: 2, resolution: 1 });
+  private nebSprite = new Sprite(this.nebRT);
+  private nebMesh: Mesh<MeshGeometry, Shader>;
+  private nebU: { uTime: number; uAspect: Float32Array; uCam: Float32Array };
+  private nebWait = 0;
+  private nebTime = rand(0, 100);
   private stars: Star[] = [];
   private starPc: ParticleContainer;
   private nebLayer = new Container();
@@ -43,9 +109,22 @@ export class Background {
   ambient = true;
   private lowDetail = false;
 
-  constructor() {
+  constructor(private renderer: Renderer) {
     const tex = textures();
-    this.view.addChild(this.nebLayer);
+    const shader = Shader.from({
+      gl: { vertex: NEBULA_VERT, fragment: NEBULA_FRAG },
+      resources: {
+        nebula: {
+          uTime: { value: 0, type: 'f32' },
+          uAspect: { value: new Float32Array([1, 1]), type: 'vec2<f32>' },
+          uCam: { value: new Float32Array([0, 0]), type: 'vec2<f32>' },
+        },
+      },
+    });
+    this.nebU = shader.resources.nebula.uniforms;
+    const quad = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);
+    this.nebMesh = new Mesh({ geometry: new MeshGeometry({ positions: quad, uvs: quad, indices: new Uint32Array([0, 1, 2, 0, 2, 3]) }), shader });
+    this.view.addChild(this.nebSprite, this.nebLayer);
 
     // nebulae (positions in a parallax "world" space)
     const add = (wx: number, wy: number, scale: number, color: number, alpha: number, branch?: Branch) => {
@@ -59,9 +138,6 @@ export class Background {
       this.nebLayer.addChild(s);
       this.nebs.push({ s, wx, wy, baseAlpha: alpha, target: alpha, rot: rand(-0.01, 0.01), branch });
     };
-    add(0, 0, 3.4, 0x3a2a8c, 0.75);
-    add(-260, 180, 2.6, 0x16407a, 0.6);
-    add(300, -200, 2.4, 0x4a1f6e, 0.55);
     // branch clouds sit far out behind their own branch, so they never pile up over the centre
     add(0, -1050, 2.0, BRANCH_COLORS.force, 0.04, 'force');
     add(1050, 0, 2.0, BRANCH_COLORS.reach, 0.04, 'reach');
@@ -87,15 +163,34 @@ export class Background {
     this.starPc.update();
   }
 
-  /** low detail: no nebulae, no shooting stars, only the larger stars */
+  /** low detail: no nebula, no shooting stars, only the larger stars */
   setDetail(level: 'low' | 'high') {
     this.lowDetail = level === 'low';
-    this.nebLayer.visible = !this.lowDetail;
+    this.nebLayer.visible = this.nebSprite.visible = !this.lowDetail;
+    this.nebWait = 0;
   }
 
   resize(w: number, h: number) {
     this.w = w;
     this.h = h;
+    this.nebRT.resize(Math.ceil(w * NEBULA_SCALE), Math.ceil(h * NEBULA_SCALE));
+    this.nebMesh.scale.set(this.nebRT.width, this.nebRT.height);
+    this.nebSprite.setSize(w, h);
+    this.nebU.uAspect[0] = w / h;
+    this.nebWait = 0;
+  }
+
+  private renderNebula(dt: number, camX: number, camY: number) {
+    if (this.lowDetail) return;
+    if (this.ambient) this.nebTime += dt * NEBULA_SPEED;
+    this.nebWait -= dt;
+    if (this.nebWait > 0) return;
+    this.nebWait = 1 / NEBULA_FPS;
+    const k = (0.02 * 2.2) / this.h; // parallax: the gas moves at 2% of the camera, slower than the farthest stars
+    this.nebU.uTime = this.nebTime;
+    this.nebU.uCam[0] = camX * k;
+    this.nebU.uCam[1] = camY * k;
+    this.renderer.render({ container: this.nebMesh, target: this.nebRT, clear: true });
   }
 
   /** 0..1 investment per branch → nebula brightness */
@@ -106,6 +201,7 @@ export class Background {
 
   update(dt: number, camX: number, camY: number, zoom: number) {
     this.t += dt;
+    this.renderNebula(dt, camX, camY);
     const { w, h } = this;
     const ext = 80;
     for (const s of this.stars) {
