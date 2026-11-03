@@ -84,12 +84,10 @@ export const SAVE_KEY = 'uncrown-save-v1';
 const LEGACY_SAVE_KEYS = ['lumen-bloom-save-v1'];
 
 export function defaultSettings(): Settings {
-  const reduced =
-    typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   return {
-    volume: 0.7, sfxVolume: 1, specialVolume: 1, uiVolume: 1, musicVolume: 1, musicTrack: 'all', harvestMusic: 'full',
+    volume: 0.7, sfxVolume: 0.7, specialVolume: 0.7, uiVolume: 0.7, musicVolume: 1, musicTrack: 'all', harvestMusic: 'full',
     hoverSounds: true, reverb: 0.5, muteHidden: true,
-    reducedMotion: !!reduced, shake: 1, cameraFx: true, ripples: true, flashes: 1, slowmo: true, ambient: true,
+    reducedMotion: false, shake: 1, cameraFx: true, ripples: true, flashes: 1, slowmo: true, ambient: true,
     ...GRAPHICS_PRESETS.high, darkness: 'deep', antialias: 'auto', fpsCap: 0, showFps: false,
     uiScale: 1, damageNumbers: true, hints: true, skipSummary: false,
   };

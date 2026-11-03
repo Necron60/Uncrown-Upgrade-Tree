@@ -33,7 +33,7 @@ npm run typecheck
 Press `Esc` (in the Bloom or during a harvest, which pauses it), or use the sliders icon. Every option saves automatically.
 
 - **Graphics:** a low/medium/high preset; glow off/soft/full; render resolution 50–100%; particle amount; simple or rich background; darkness of the void (off/dim/deep); frame-rate cap (30/60/120/max); frame counter.
-- **Motion:** a *Reduced motion* master switch, plus individual control of screen-shake strength, camera moves (zooming into and out of the seed, opening and finale moves), distortion ripples, flash strength (below 50%, scene changes fade to dark instead of white), slow motion / hit-stop, and ambient motion. Your OS reduced-motion preference is respected on first launch.
+- **Motion:** a *Reduced motion* master switch, plus individual control of screen-shake strength, camera moves (zooming into and out of the seed, opening and finale moves), distortion ripples, flash strength (below 50%, scene changes fade to dark instead of white), slow motion / hit-stop, and ambient motion. Everything starts on, whatever the OS motion preference.
 - **Sound:** master volume; music volume, which piece plays (or all in turn) and how loud it is during a harvest; separate volumes for shattering, special shards and the interface; hover sounds on/off; reverb; silence while the tab is hidden.
 - **Interface:** interface size, damage numbers, hints, and skipping the harvest summary.
 - **Records:** lifetime stats, plus *Begin anew* to wipe your save.

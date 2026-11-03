@@ -36,6 +36,8 @@ const SOUNDTRACK: Record<Exclude<MusicTrack, 'all'>, string> = {
 type Bus = 'game' | 'gems' | 'ui' | 'music';
 const BUS_BASE: Record<Bus, number> = { game: 0.9, gems: 0.9, ui: 0.9, music: 0.38 }; // music sits under the effects
 const REVERB_MAX = 0.6;
+const BREAK_WINDOW = 0.3; // seconds
+const MAX_BREAKS = 4; // break sounds of any kind that may start within one window
 
 interface PlayOpts {
   gain?: number;
@@ -67,6 +69,8 @@ class Audio {
   private verbSend!: GainNode;
   private bufs = new Map<string, AudioBuffer>();
   private last = new Map<string, number>();
+  private breaks: number[] = []; // start times of recent break sounds
+  private queued = new Map<string, { rank: number; fn: () => void }>();
   private vol = 0.7;
 
   /** Must be called from a user gesture. Safe to call repeatedly. */
@@ -208,6 +212,30 @@ class Audio {
     return true;
   }
 
+  /** Everything one frame asks for under a key collapses into one sound, the highest rank: twenty
+   *  shards breaking at once sound like the biggest of them, and a pebble never takes a heart's slot. */
+  private perFrame(key: string, rank: number, fn: () => void) {
+    const q = this.queued.get(key);
+    if (q && q.rank >= rank) return;
+    if (!q) queueMicrotask(() => {
+      const w = this.queued.get(key);
+      this.queued.delete(key);
+      w?.fn();
+    });
+    this.queued.set(key, { rank, fn });
+  }
+
+  /** One budget shared by every kind of break sound, however many kinds there come to be: at most
+   *  MAX_BREAKS start within any BREAK_WINDOW. A must-play sound always starts, but still counts. */
+  private breakSlot(must = false): boolean {
+    if (!this.ctx || this.vol <= 0) return false;
+    const now = this.ctx.currentTime;
+    this.breaks = this.breaks.filter((t) => now - t < BREAK_WINDOW);
+    if (!must && this.breaks.length >= MAX_BREAKS) return false;
+    this.breaks.push(now);
+    return true;
+  }
+
   private play(name: string, o: PlayOpts = {}) {
     const buf = this.bufs.get(name);
     if (!buf) return;
@@ -308,22 +336,29 @@ class Audio {
   }
 
   // ── Harvest sounds: only things breaking ─────────────────────────────
+  // Every break sound goes through perFrame and breakSlot, so a burst never turns into a wall of sound.
+
   /** A bubble pop, a few per second at most; bigger shards pop lower, with a little bell (tier 2+) and a soft drum (biggest). */
   shatter(tier: number) {
-    if (!this.gate('shatter', 0.09)) return;
     const t = Math.min(tier, 3);
-    this.play(pick('pop_', 4), { gain: 0.2, rate: [1.2, 1.05, 0.92, 0.8][t] * rnd(0.94, 1.06), verb: 0.2 });
-    if (t >= 2) this.note(BELLS, noteHz(10 - t), { gain: 0.05, dur: 0.8, verb: 0.3 });
-    if (t === 3) this.play('drum_soft', { gain: 0.18, rate: 0.9 });
+    this.perFrame('shatter', t, () => {
+      if (!this.gate('shatter', 0.09) || !this.breakSlot()) return;
+      this.play(pick('pop_', 4), { gain: 0.2, rate: [1.2, 1.05, 0.92, 0.8][t] * rnd(0.94, 1.06), verb: 0.2 });
+      if (t >= 2) this.note(BELLS, noteHz(10 - t), { gain: 0.05, dur: 0.8, verb: 0.3 });
+      if (t === 3) this.play('drum_soft', { gain: 0.18, rate: 0.9 });
+    });
   }
 
-  /** A special shard breaking: a short chime arpeggio (a gong under the heart crystal). */
+  /** A special shard breaking: a short chime arpeggio (a gong under the heart crystal, which always sounds). */
   special(kind: 'gold' | 'time' | 'prism' | 'heart') {
-    if (!this.gate('special', 0.05)) return;
-    const base = kind === 'gold' ? 8 : kind === 'time' ? 6 : kind === 'prism' ? 10 : 2;
-    this.on('gems', () => {
-      [0, 2, 4].forEach((d, i) => this.note(CHIME, noteHz(base + d), { gain: 0.14, verb: 0.7, delay: i * 0.05 }));
-      if (kind === 'heart') this.play('gong_soft', { gain: 0.3, dur: 3, verb: 0.5 });
+    this.perFrame('special', ['time', 'gold', 'prism', 'heart'].indexOf(kind), () => {
+      const heart = kind === 'heart';
+      if (heart ? !this.breakSlot(true) : !this.gate('special', 0.05) || !this.breakSlot()) return;
+      const base = kind === 'gold' ? 8 : kind === 'time' ? 6 : kind === 'prism' ? 10 : 2;
+      this.on('gems', () => {
+        [0, 2, 4].forEach((d, i) => this.note(CHIME, noteHz(base + d), { gain: 0.14, verb: 0.7, delay: i * 0.05 }));
+        if (heart) this.play('gong_soft', { gain: 0.3, dur: 3, verb: 0.5 });
+      });
     });
   }
 
