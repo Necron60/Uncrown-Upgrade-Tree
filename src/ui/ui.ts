@@ -194,7 +194,7 @@ export class Tooltip {
     if (!this.visible || changed) {
       this.visible = true;
       gsap.killTweensOf(this.el);
-      gsap.fromTo(this.el, { opacity: 0, x: '-=6' }, { opacity: 1, x: '+=6', duration: 0.22, ease: 'power3.out' });
+      gsap.fromTo(this.el, { opacity: 0, x: -6 }, { opacity: 1, x: 0, duration: 0.2, ease: 'power3.out' });
     }
   }
 
@@ -216,12 +216,15 @@ export class Tooltip {
     if (!this.visible) return;
     this.visible = false;
     this.current = null;
-    gsap.to(this.el, { opacity: 0, duration: 0.15 });
+    // cancel a fade-in still in flight, or it would finish *after* this and leave the card showing
+    gsap.killTweensOf(this.el);
+    gsap.to(this.el, { opacity: 0, x: 0, duration: 0.12 });
   }
 
   /** Shake: feedback for a denied purchase. */
   deny() {
-    gsap.fromTo(this.el, { x: '-=6' }, { x: '+=6', duration: 0.3, ease: 'elastic.out(1.5, 0.25)' });
+    if (!this.visible) return;
+    gsap.fromTo(this.el, { x: -7 }, { x: 0, duration: 0.35, ease: 'elastic.out(1.5, 0.25)' });
   }
 
   private render(def: NodeDef, state: GameState) {

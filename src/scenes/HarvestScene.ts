@@ -45,6 +45,18 @@ interface Arc {
   jitterT: number;
 }
 
+interface Seeker {
+  glow: Sprite;
+  core: Sprite;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  target: Shard | null;
+  rest: number; // brief pause after a hit before steering again
+  phase: number; // idle orbit angle
+}
+
 interface KillInfo {
   crit?: boolean;
   executed?: boolean;
@@ -59,6 +71,9 @@ export class HarvestScene {
   private root = new Container();
   private shardLayer = new Container();
   private lensLayer = new Container();
+  private seekerLayer = new Container();
+  /** 0 → 1 as the lens materialises at the start (and back to 0 at the end) */
+  private lensIntro = 0;
   private arcLayer = new Container();
   private numLayer = new Container();
   private moteLayer = new Container();
@@ -77,8 +92,8 @@ export class HarvestScene {
   private drawnR = -1;
   private echo = { x: 0, y: 0 };
   private echoG = new Graphics();
-  private sats: { glow: Sprite; core: Sprite; x: number; y: number }[] = [];
-  private satAngle = 0;
+  /** Seeker motes: independent hunters that fly around the field (Seeker Mote node). */
+  private seekers: Seeker[] = [];
   private pulseRings: { s: Sprite; t: number; r: number; echo: boolean }[] = [];
 
   // run state
@@ -124,7 +139,7 @@ export class HarvestScene {
   constructor(private game: Game, private st: Stats) {
     const tex = textures();
     this.view.addChild(this.root, this.moteLayer);
-    this.root.addChild(this.shardLayer, this.fx.view, this.arcLayer, this.lensLayer, this.numLayer);
+    this.root.addChild(this.shardLayer, this.fx.view, this.arcLayer, this.seekerLayer, this.lensLayer, this.numLayer);
     this.lensGlow = new Sprite(tex.glow);
     this.lensGlow.anchor.set(0.5);
     this.lensGlow.blendMode = 'add';
@@ -149,8 +164,8 @@ export class HarvestScene {
       core.anchor.set(0.5);
       core.blendMode = 'add';
       core.scale.set(0.42);
-      this.lensLayer.addChild(glow, core);
-      this.sats.push({ glow, core, x: 0, y: 0 });
+      this.seekerLayer.addChild(glow, core);
+      this.seekers.push({ glow, core, x: 0, y: 0, vx: 0, vy: 0, target: null, rest: 0.5, phase: (i / nSat) * TAU });
     }
     window.addEventListener('pointermove', this.onMove);
     window.addEventListener('pointerdown', this.onMove);
@@ -165,14 +180,20 @@ export class HarvestScene {
     const { w, h } = this;
     this.lens.x = this.lens.px = this.echo.x = w / 2;
     this.lens.y = this.lens.py = this.echo.y = h / 2;
+    // seekers burst out of the lens in a fan
+    this.seekers.forEach((m, i) => {
+      const a = (i / this.seekers.length) * TAU - Math.PI / 2;
+      m.x = this.lens.x;
+      m.y = this.lens.y;
+      m.vx = Math.cos(a) * 380;
+      m.vy = Math.sin(a) * 380;
+    });
     const first = Math.min(this.st.maxShards, 6);
     for (let i = 0; i < first; i++) this.after(0.15 + i * 0.07, () => this.spawn());
     audio.whoosh();
     this.game.hhud.showBanner('The Harvest', this.game.state.lifetime.runs === 0 ? 'move your lens over the shards' : '', 'rgba(150,220,255,0.7)');
-    // lens materialises
-    this.lensLayer.scale.set(0);
-    this.lensLayer.pivot.set(0, 0);
-    gsap.to(this.lensLayer.scale, { x: 1, y: 1, duration: 0.6, ease: 'back.out(2.2)' });
+    // lens materialises in place
+    gsap.to(this, { lensIntro: 1, duration: 0.6, ease: 'back.out(2.2)' });
   }
 
   private after(t: number, fn: () => void) {
@@ -546,6 +567,91 @@ export class HarvestScene {
     e.circle(0, 0, eR).fill({ color: 0xc58cff, alpha: 0.04 });
   }
 
+  // ───────────────────────────────────────────── seeker motes
+  /** Prefer shards the lens isn't covering and that no other mote is already chasing. */
+  private pickSeekerTarget(m: Seeker): Shard | null {
+    let best: Shard | null = null;
+    let bestScore = Infinity;
+    const L = this.lens;
+    for (const s of this.shards) {
+      if (s.dead || s.spawn < 0.5) continue;
+      let score = Math.hypot(s.x - m.x, s.y - m.y);
+      if (this.seekers.some((o) => o !== m && o.target === s)) score += 420;
+      if (dist2(s.x, s.y, L.x, L.y) < (L.R + s.r) ** 2) score += 260;
+      if (s.type !== 'normal') score -= 120; // special shards are worth chasing
+      if (score < bestScore) { bestScore = score; best = s; }
+    }
+    return best;
+  }
+
+  private updateSeekers(dt: number) {
+    const st = this.st;
+    const L = this.lens;
+    const tex = textures();
+    const speed = 480 * st.satSpeed;
+    const accel = 2400 * st.satSpeed;
+    const dmg = this.pulseDamage() * 0.8 * st.satDamage;
+    for (const m of this.seekers) {
+      m.rest -= dt;
+      if (m.target?.dead) m.target = null;
+      if (!m.target && m.rest <= 0 && !this.ended) m.target = this.pickSeekerTarget(m);
+
+      let tx: number, ty: number, max: number;
+      if (m.target && m.rest <= 0) {
+        tx = m.target.x;
+        ty = m.target.y;
+        max = speed;
+      } else {
+        // idle: a loose orbit around the lens
+        m.phase += dt * 1.8;
+        tx = L.x + Math.cos(m.phase) * (L.R + 36);
+        ty = L.y + Math.sin(m.phase) * (L.R + 36);
+        max = speed * 0.65;
+      }
+      // seek steering: accelerate toward the desired velocity, so paths curve organically
+      const dx = tx - m.x, dy = ty - m.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const dvx = (dx / d) * max - m.vx;
+      const dvy = (dy / d) * max - m.vy;
+      const dl = Math.hypot(dvx, dvy) || 1;
+      const a = Math.min(accel * dt, dl);
+      m.vx += (dvx / dl) * a;
+      m.vy += (dvy / dl) * a;
+      m.x += m.vx * dt;
+      m.y += m.vy * dt;
+      if (m.x < 10) { m.x = 10; m.vx = Math.abs(m.vx); }
+      if (m.x > this.w - 10) { m.x = this.w - 10; m.vx = -Math.abs(m.vx); }
+      if (m.y < 84) { m.y = 84; m.vy = Math.abs(m.vy); }
+      if (m.y > this.h - 10) { m.y = this.h - 10; m.vy = -Math.abs(m.vy); }
+
+      // comet look: stretched glow along the flight path + a fading trail
+      const sp = Math.hypot(m.vx, m.vy);
+      m.glow.position.set(m.x, m.y);
+      m.glow.rotation = Math.atan2(m.vy, m.vx);
+      m.glow.scale.set(0.4 + sp * 0.0006, 0.32);
+      m.core.position.set(m.x, m.y);
+      if (!this.ended) {
+        this.fx.emit({ x: m.x, y: m.y, texture: tex.dot, count: 1, color: [0x7fe9ff, 0xcff8ff], speed: [0, 14], life: [0.22, 0.42], size: [0.16, 0.28], alpha: 0.75, drag: 3 });
+      }
+
+      if (this.ended) continue;
+      for (const s of this.shards) {
+        if (s.dead || s.satCd > 0 || s.spawn < 0.5) continue;
+        if (dist2(s.x, s.y, m.x, m.y) >= (s.r + 9) ** 2) continue;
+        s.satCd = 0.22;
+        this.damage(s, dmg, { canCrit: st.satCrit > 0, canArc: st.satArc > 0, quiet: true });
+        // ricochet off, then loop back for another pass
+        const nx = m.x - s.x, ny = m.y - s.y;
+        const nl = Math.hypot(nx, ny) || 1;
+        m.vx = (nx / nl) * speed * 0.75 + rand(-90, 90);
+        m.vy = (ny / nl) * speed * 0.75 + rand(-90, 90);
+        m.rest = 0.07;
+        if (s.dead) m.target = null;
+        break;
+      }
+    }
+  }
+
   // ───────────────────────────────────────────── loop
   update(realDt: number) {
     if (this.hitStop > 0) {
@@ -567,11 +673,14 @@ export class HarvestScene {
     this.lensPulse = Math.max(0, this.lensPulse - realDt * 6);
     const ps = 1 + this.lensPulse * 0.06;
     this.lensG.position.set(L.x, L.y);
-    this.lensG.scale.set(ps);
+    const li = Math.max(0, this.lensIntro);
+    this.lensG.scale.set(ps * li);
+    this.lensTicks.scale.set(li);
+    this.echoG.scale.set(li);
     this.lensTicks.position.set(L.x, L.y);
     this.lensTicks.rotation += dt * 0.6;
     this.lensGlow.position.set(L.x, L.y);
-    this.lensGlow.alpha = 0.16 + this.lensPulse * 0.2 + (this.inOvertime ? 0.15 : 0);
+    this.lensGlow.alpha = (0.16 + this.lensPulse * 0.2 + (this.inOvertime ? 0.15 : 0)) * li;
     this.lensGlow.tint = this.inOvertime ? 0xffb36b : 0x9fe8ff;
     this.echoG.position.set(this.echo.x, this.echo.y);
     this.echoG.rotation -= dt * 0.8;
@@ -638,30 +747,8 @@ export class HarvestScene {
       }
     }
 
-    // satellites
-    if (this.sats.length) {
-      this.satAngle += dt * 2.3 * st.satSpeed;
-      const orbit = L.R * 0.92 + 16;
-      const satDmg = this.pulseDamage() * 0.55 * st.satDamage;
-      const tex = textures();
-      this.sats.forEach((sat, i) => {
-        const a = this.satAngle + (i / this.sats.length) * TAU;
-        sat.x = L.x + Math.cos(a) * orbit;
-        sat.y = L.y + Math.sin(a) * orbit;
-        sat.glow.position.set(sat.x, sat.y);
-        sat.core.position.set(sat.x, sat.y);
-        if (!this.ended) {
-          this.fx.emit({ x: sat.x, y: sat.y, texture: tex.dot, count: 1, color: 0x7fe9ff, speed: [0, 8], life: [0.18, 0.3], size: [0.18, 0.26], alpha: 0.7 });
-          for (const s of this.shards) {
-            if (s.dead || s.satCd > 0 || s.spawn < 0.5) continue;
-            if (dist2(s.x, s.y, sat.x, sat.y) < (s.r + 10) ** 2) {
-              s.satCd = 0.16;
-              this.damage(s, satDmg, { canCrit: st.satCrit > 0, canArc: st.satArc > 0, quiet: true });
-            }
-          }
-        }
-      });
-    }
+    // seeker motes hunt on their own
+    if (this.seekers.length) this.updateSeekers(dt);
 
     // shards
     const grav = st.gravity;
@@ -801,7 +888,8 @@ export class HarvestScene {
         gsap.to(s.c, { alpha: 0, duration: 0.3, onComplete: () => { if (!this.view.destroyed) this.shardLayer.removeChild(s.c); s.destroy(); } });
       });
     });
-    gsap.to(this.lensLayer.scale, { x: 0, y: 0, duration: 0.5, delay: 0.3, ease: 'back.in(2)' });
+    gsap.to(this, { lensIntro: 0, duration: 0.5, delay: 0.3, ease: 'back.in(2)' });
+    for (const m of this.seekers) gsap.to([m.glow, m.core], { alpha: 0, duration: 0.4 });
     gsap.delayedCall(1.0, () => { if (!this.view.destroyed) this.finish(); });
   }
 

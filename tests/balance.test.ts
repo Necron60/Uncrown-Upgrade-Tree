@@ -119,13 +119,13 @@ export function simulateRun(st: Stats) {
       }
       if (st.echoPower > 0) for (const s of targets(R * 0.85).slice(0, Math.ceil(tg.length * 0.7))) hit(s, pulseDmg() * st.echoPower, true);
     }
-    // satellites: each sweeps the ring and tags ~3 shards/s when the field is busy
+    // seeker motes hunt independently of the lens: ~2.4 hits/s each whenever any shard is up
     if (st.satellites > 0) {
-      satAcc += dt * Math.round(st.satellites) * 2.6 * st.satSpeed * Math.min(1, shards.length / 8);
+      satAcc += dt * Math.round(st.satellites) * 2.4 * st.satSpeed * (shards.length > 0 ? 1 : 0);
       while (satAcc >= 1) {
         satAcc -= 1;
         const alive = shards.filter((s) => s.hp > 0);
-        if (alive.length) hit(alive[Math.floor(rnd() * alive.length)], pulseDmg() * 0.55 * st.satDamage, st.satCrit > 0);
+        if (alive.length) hit(alive.sort((a, b) => a.hp - b.hp)[0], pulseDmg() * 0.8 * st.satDamage, st.satCrit > 0);
       }
     }
     shards = shards.filter((s) => s.hp > 0);
