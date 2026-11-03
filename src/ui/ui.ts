@@ -1,7 +1,7 @@
 import gsap from 'gsap';
 import { fmt, fmtTime } from '../core/format';
 import { hexToCss } from '../core/math';
-import type { GameState, Settings } from '../core/state';
+import { GRAPHICS_PRESETS, type GameState, type Settings } from '../core/state';
 import {
   BRANCH_COLORS, BRANCH_NAMES, KEYSTONES, KIND_NAMES, NODE_MAP, NODES, PRISM_COLOR, nodeColor, type NodeDef,
 } from '../data/tree';
@@ -138,6 +138,10 @@ export class TreeHud {
     this.muteBtn.innerHTML = muted ? ICON.mute : ICON.sound;
   }
 
+  setHints(on: boolean) {
+    this.hint.style.display = on ? '' : 'none';
+  }
+
   sync(state: GameState, animate = true, urge = false) {
     this.lumen.set(state.lumen, animate);
     this.prism.set(state.prism, animate);
@@ -179,6 +183,8 @@ export class TreeHud {
 // ───────────────────────────────────────────────────────────────────────────
 export class Tooltip {
   readonly el = h('div', 'tooltip plate');
+  /** interface size setting: the overlay is CSS-zoomed, so positions are divided by it */
+  scale = 1;
   private current: string | null = null;
   private visible = false;
 
@@ -203,13 +209,14 @@ export class Tooltip {
   }
 
   place(sx: number, sy: number, nodeR: number) {
-    const w = this.el.offsetWidth || 318;
-    const hh = this.el.offsetHeight || 200;
+    const z = this.scale;
+    const w = (this.el.offsetWidth || 318) * z;
+    const hh = (this.el.offsetHeight || 200) * z;
     let x = sx + nodeR + 18;
     if (x + w > window.innerWidth - 12) x = sx - nodeR - 18 - w;
     const y = Math.min(Math.max(12, sy - hh / 2), window.innerHeight - hh - 12);
-    this.el.style.left = `${Math.round(x)}px`;
-    this.el.style.top = `${Math.round(y)}px`;
+    this.el.style.left = `${Math.round(x / z)}px`;
+    this.el.style.top = `${Math.round(y / z)}px`;
   }
 
   hide() {
@@ -469,12 +476,27 @@ export class Summary {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+type Tab = 'graphics' | 'motion' | 'sound' | 'interface' | 'records';
+const TABS: [Tab, string][] = [['graphics', 'Graphics'], ['motion', 'Motion'], ['sound', 'Sound'], ['interface', 'Interface'], ['records', 'Records']];
+const UI_SIZES: [string, string][] = [['0.9', 'small'], ['1', 'normal'], ['1.15', 'large'], ['1.3', 'larger']];
+
+const choice = (k: string, opts: [string, string][], cur: string) =>
+  `<span class="choice" data-k="${k}">${opts.map(([v, l]) => `<button data-v="${v}" class="${v === cur ? 'on' : ''}">${l}</button>`).join('<i>·</i>')}</span>`;
+const toggle = (k: string, on: boolean) => choice(k, [['1', 'on'], ['0', 'off']], on ? '1' : '0');
+const pct = (v: number) => `${Math.round(v * 100)}%`;
+const slider = (k: string, v: number) =>
+  `<span class="slider"><input type="range" min="0" max="1" step="0.05" value="${v}" data-k="${k}" aria-label="${k}"><b class="sv">${pct(v)}</b></span>`;
+const row = (label: string, control: string, note = '', dim = false) =>
+  `<div class="row${dim ? ' dim' : ''}">${leader(label, control)}${note ? `<div class="note">${note}</div>` : ''}</div>`;
+
 export class SettingsPanel {
   readonly wrap = h('div', 'modal-wrap');
   private modal = h('div', 'modal plate double settings');
   onChange: (s: Settings) => void = () => {};
   onReset: () => void = () => {};
   open = false;
+  private tab: Tab = 'graphics';
+  private state!: GameState;
 
   constructor(host: HTMLElement) {
     this.wrap.append(this.modal);
@@ -483,52 +505,9 @@ export class SettingsPanel {
   }
 
   show(state: GameState) {
+    this.state = state;
     this.open = true;
-    const s = state.settings;
-    const L = state.lifetime;
-    const sw = (k: string, on: boolean) => `<button class="switch" role="switch" aria-checked="${on}" data-k="${k}"><span class="on">on</span>/<span class="off">off</span></button>`;
-    this.modal.innerHTML = `
-      <div class="title">Settings</div>
-      <div class="rule orn"></div>
-      ${leader('Volume', `<input type="range" min="0" max="1" step="0.05" value="${s.volume}" data-k="volume" aria-label="Volume">`)}
-      ${leader('Screen shake', sw('shake', s.shake))}
-      ${leader('Reduced motion', sw('reducedMotion', s.reducedMotion))}
-      ${leader('Bloom glow', sw('quality', s.quality === 'high'))}
-      <div class="rule"></div>
-      <div class="ledger-sm">
-        ${leader('Harvests', fmt(L.runs))}
-        ${leader('Shards broken', fmt(L.shardsBroken))}
-        ${leader('Lumen gathered', fmt(L.lumenEarned))}
-        ${leader('Best harvest', fmt(L.bestRun))}
-        ${leader('Time under the stars', fmtTime(L.playTime))}
-      </div>
-      <div class="rule"></div>
-      <div class="foot"><button class="text-btn danger reset">Begin anew</button><button class="text-btn close">Close<kbd>esc</kbd></button></div>`;
-    const emit = () => this.onChange(s);
-    (this.modal.querySelector('input[data-k=volume]') as HTMLInputElement).addEventListener('input', (e) => {
-      s.volume = parseFloat((e.target as HTMLInputElement).value);
-      emit();
-    });
-    this.modal.querySelectorAll<HTMLElement>('.switch').forEach((t) => t.addEventListener('click', () => {
-      const k = t.dataset.k!;
-      const on = t.getAttribute('aria-checked') !== 'true';
-      t.setAttribute('aria-checked', String(on));
-      if (k === 'shake') s.shake = on;
-      if (k === 'reducedMotion') s.reducedMotion = on;
-      if (k === 'quality') s.quality = on ? 'high' : 'low';
-      emit();
-    }));
-    const reset = this.modal.querySelector('.reset') as HTMLButtonElement;
-    let armed = false;
-    reset.addEventListener('click', () => {
-      if (!armed) {
-        armed = true;
-        reset.textContent = 'Erase everything?';
-        return;
-      }
-      this.onReset();
-    });
-    this.modal.querySelector('.close')!.addEventListener('click', () => this.hide());
+    this.render();
     this.wrap.classList.add('on');
     gsap.fromTo(this.modal, { y: 20, opacity: 0 }, { y: 0, opacity: 1, duration: 0.45, ease: 'expo.out' });
     gsap.fromTo(this.wrap, { opacity: 0 }, { opacity: 1, duration: 0.25 });
@@ -538,6 +517,125 @@ export class SettingsPanel {
     if (!this.open) return;
     this.open = false;
     gsap.to(this.wrap, { opacity: 0, duration: 0.2, onComplete: () => this.wrap.classList.remove('on') });
+  }
+
+  private body(): string {
+    const s = this.state.settings;
+    switch (this.tab) {
+      case 'graphics': {
+        const preset = (Object.keys(GRAPHICS_PRESETS) as (keyof typeof GRAPHICS_PRESETS)[])
+          .find((p) => Object.entries(GRAPHICS_PRESETS[p]).every(([k, v]) => s[k as keyof Settings] === v)) ?? '';
+        return [
+          row('Preset', choice('preset', [['low', 'low'], ['medium', 'medium'], ['high', 'high']], preset), 'Sets the four options below at once.'),
+          row('Glow', choice('bloom', [['off', 'off'], ['soft', 'soft'], ['full', 'full']], s.bloom), 'The soft light bleeding off bright things. The heaviest effect on the GPU.'),
+          row('Resolution', choice('resolution', [['0.5', '50%'], ['0.75', '75%'], ['1', '100%']], String(s.resolution)), 'Share of your screen\'s sharpness to render at. Lower runs faster.'),
+          row('Particles', choice('particles', [['low', 'few'], ['medium', 'some'], ['high', 'many']], s.particles)),
+          row('Background', choice('background', [['low', 'simple'], ['high', 'rich']], s.background), 'Simple drops the nebulae, faint stars and shooting stars.'),
+          row('Frame rate', choice('fpsCap', [['30', '30'], ['60', '60'], ['120', '120'], ['0', 'max']], String(s.fpsCap))),
+          row('Frame counter', toggle('showFps', s.showFps)),
+        ].join('');
+      }
+      case 'motion': {
+        const rm = s.reducedMotion;
+        const why = rm ? 'Off while reduced motion is on.' : '';
+        return [
+          row('Reduced motion', toggle('reducedMotion', rm), 'One switch for everything below: no shake, camera moves, ripples, slow motion or ambient motion, and dimmer flashes.'),
+          '<div class="rule"></div>',
+          row('Screen shake', slider('shake', s.shake), why, rm),
+          row('Camera moves', toggle('cameraFx', s.cameraFx), why || 'Zooming into the seed and back out, and the opening and finale camera moves.', rm),
+          row('Distortion ripples', toggle('ripples', s.ripples), why || 'The shockwave that warps the screen on keystones and the finale.', rm),
+          row('Flashes', slider('flashes', s.flashes), rm ? 'Capped at 30% while reduced motion is on.' : 'Below 50%, scene changes fade to dark instead of white.'),
+          row('Slow motion', toggle('slowmo', s.slowmo), why || 'Hit-stop on heart crystals and the slowdown when a harvest ends.', rm),
+          row('Ambient motion', toggle('ambient', s.ambient), why || 'Twinkling stars, drifting motes, light flowing along branches and breathing nodes.', rm),
+        ].join('');
+      }
+      case 'sound':
+        return [
+          row('Master volume', slider('volume', s.volume)),
+          row('Harvest sounds', slider('sfxVolume', s.sfxVolume), 'Pulses, shattering crystals, lightning and novas.'),
+          row('Interface sounds', slider('uiVolume', s.uiVolume), 'Hovering, growing nodes and menu clicks.'),
+          row('Silent in background', toggle('muteHidden', s.muteHidden), 'Pause all sound while the tab is hidden.'),
+        ].join('');
+      case 'interface':
+        return [
+          row('Interface size', choice('uiScale', UI_SIZES, String(s.uiScale))),
+          row('Damage numbers', toggle('damageNumbers', s.damageNumbers)),
+          row('Hints', toggle('hints', s.hints), 'Help lines under the harvest button and first-time tips.'),
+          row('Skip harvest summary', toggle('skipSummary', s.skipSummary), 'Go straight back to the Bloom; the result shows as a short line instead.'),
+        ].join('');
+      case 'records': {
+        const L = this.state.lifetime;
+        return `<div class="ledger-sm">
+          ${leader('Harvests', fmt(L.runs))}
+          ${leader('Shards broken', fmt(L.shardsBroken))}
+          ${leader('Lumen gathered', fmt(L.lumenEarned))}
+          ${leader('Prism gathered', fmt(L.prismEarned))}
+          ${leader('Best harvest', fmt(L.bestRun))}
+          ${leader('Longest combo', fmt(L.bestCombo))}
+          ${leader('Time under the stars', fmtTime(L.playTime))}
+        </div>
+        <div class="rule"></div>
+        <div class="danger-zone"><span class="note">Erase every node, all Lumen and these records.</span><button class="text-btn danger reset">Begin anew</button></div>`;
+      }
+    }
+  }
+
+  private render() {
+    const tabs = TABS.map(([t, l]) => `<button class="tab ${t === this.tab ? 'on' : ''}" data-tab="${t}">${l}</button>`).join('');
+    this.modal.innerHTML = `
+      <div class="title">Settings</div>
+      <div class="tabs">${tabs}</div>
+      <div class="rule"></div>
+      <div class="settings-body">${this.body()}</div>
+      <div class="rule"></div>
+      <div class="foot"><button class="text-btn close">Close<kbd>esc</kbd></button></div>`;
+    this.bind();
+  }
+
+  private set(k: string, v: string) {
+    const s = this.state.settings;
+    switch (k) {
+      case 'preset': Object.assign(s, GRAPHICS_PRESETS[v as keyof typeof GRAPHICS_PRESETS]); break;
+      case 'bloom': s.bloom = v as Settings['bloom']; break;
+      case 'particles': s.particles = v as Settings['particles']; break;
+      case 'background': s.background = v as Settings['background']; break;
+      case 'resolution': case 'fpsCap': case 'uiScale':
+      case 'volume': case 'sfxVolume': case 'uiVolume': case 'shake': case 'flashes':
+        s[k] = Number(v); break;
+      case 'showFps': case 'muteHidden': case 'reducedMotion': case 'cameraFx': case 'ripples':
+      case 'slowmo': case 'ambient': case 'damageNumbers': case 'hints': case 'skipSummary':
+        s[k] = v === '1'; break;
+    }
+    this.onChange(s);
+  }
+
+  private bind() {
+    this.modal.querySelectorAll<HTMLButtonElement>('.tab').forEach((b) => b.addEventListener('click', () => {
+      this.tab = b.dataset.tab as Tab;
+      this.render();
+    }));
+    this.modal.querySelectorAll<HTMLElement>('.choice').forEach((c) => c.querySelectorAll<HTMLButtonElement>('button').forEach((b) =>
+      b.addEventListener('click', () => {
+        this.set(c.dataset.k!, b.dataset.v!);
+        this.render(); // presets and reduced motion change other rows
+      })));
+    this.modal.querySelectorAll<HTMLInputElement>('input[type=range]').forEach((inp) => inp.addEventListener('input', () => {
+      inp.parentElement!.querySelector('.sv')!.textContent = pct(Number(inp.value));
+      this.set(inp.dataset.k!, inp.value);
+    }));
+    const reset = this.modal.querySelector<HTMLButtonElement>('.reset');
+    if (reset) {
+      let armed = false;
+      reset.addEventListener('click', () => {
+        if (!armed) {
+          armed = true;
+          reset.textContent = 'Erase everything?';
+          return;
+        }
+        this.onReset();
+      });
+    }
+    this.modal.querySelector('.close')!.addEventListener('click', () => this.hide());
   }
 }
 

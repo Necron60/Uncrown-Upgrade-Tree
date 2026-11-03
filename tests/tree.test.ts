@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { NODES, NODE_MAP, RING_RADII, nodeRadius } from '../src/data/tree';
 import { BASE_STATS, STAT_META } from '../src/data/stats';
 import { polar } from '../src/core/math';
-import { newGame, parseSave } from '../src/core/state';
+import { defaultSettings, effectiveMotion, newGame, normalizeSettings, parseSave } from '../src/core/state';
 import { buy, costAt, nodeState, statsFor, checkBuy } from '../src/systems/tree-logic';
 
 describe('tree data integrity', () => {
@@ -126,5 +126,45 @@ describe('save', () => {
     expect(back.levels.force_1).toBe(3);
     expect(parseSave('not json').lumen).toBe(0);
     expect(parseSave('{"lumen":"x","levels":{"force_1":2.7}}').levels.force_1).toBe(2);
+  });
+});
+
+describe('settings', () => {
+  it('migrates v0.1 settings (boolean shake, single quality switch)', () => {
+    const s = normalizeSettings({ volume: 0.4, shake: false, reducedMotion: false, quality: 'low' });
+    expect(s.volume).toBe(0.4);
+    expect(s.shake).toBe(0);
+    expect(s.bloom).toBe('off');
+    expect(s.cameraFx).toBe(true); // new options get defaults
+    expect(normalizeSettings({ shake: true }).shake).toBe(1);
+  });
+
+  it('rejects and clamps bad values', () => {
+    const s = normalizeSettings({ volume: 7, uiScale: 0.1, bloom: 'neon', fpsCap: 47, flashes: 'lots', resolution: -1 });
+    const d = defaultSettings();
+    expect(s.volume).toBe(1);
+    expect(s.uiScale).toBe(0.85);
+    expect(s.bloom).toBe(d.bloom);
+    expect(s.fpsCap).toBe(d.fpsCap);
+    expect(s.flashes).toBe(d.flashes);
+    expect(s.resolution).toBe(0.5);
+    expect(normalizeSettings(null)).toEqual(d);
+  });
+
+  it('reduced motion overrides the individual motion options', () => {
+    const s = { ...defaultSettings(), reducedMotion: true, shake: 1, flashes: 1 };
+    const m = effectiveMotion(s);
+    expect(m).toMatchObject({ shake: 0, cameraFx: false, ripples: false, slowmo: false, ambient: false });
+    expect(m.flashes).toBeLessThanOrEqual(0.3);
+    expect(effectiveMotion({ ...s, reducedMotion: false }).cameraFx).toBe(true);
+  });
+
+  it('survives a full save round-trip', () => {
+    const g = newGame();
+    g.settings.particles = 'low';
+    g.settings.shake = 0.35;
+    const back = parseSave(JSON.stringify(g));
+    expect(back.settings.particles).toBe('low');
+    expect(back.settings.shake).toBe(0.35);
   });
 });

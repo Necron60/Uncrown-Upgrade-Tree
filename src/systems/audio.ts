@@ -12,7 +12,9 @@ const noteHz = (step: number, base = 523.25) => {
 class Audio {
   private ctx: AudioContext | null = null;
   private master!: GainNode;
-  private sfx!: GainNode;
+  private game!: GainNode;
+  private ui!: GainNode;
+  private busLevels = { game: 1, ui: 1 };
   private verb!: ConvolverNode;
   private verbSend!: GainNode;
   private noiseBuf!: AudioBuffer;
@@ -35,9 +37,12 @@ class Audio {
     this.master = ctx.createGain();
     this.master.gain.value = this.vol;
     this.master.connect(comp).connect(ctx.destination);
-    this.sfx = ctx.createGain();
-    this.sfx.gain.value = 0.9;
-    this.sfx.connect(this.master);
+    this.game = ctx.createGain();
+    this.game.gain.value = 0.9 * this.busLevels.game;
+    this.game.connect(this.master);
+    this.ui = ctx.createGain();
+    this.ui.gain.value = 0.9 * this.busLevels.ui;
+    this.ui.connect(this.master);
 
     // generated reverb impulse: decaying stereo noise
     const len = ctx.sampleRate * 2.4;
@@ -60,6 +65,27 @@ class Audio {
   setVolume(v: number) {
     this.vol = v;
     if (this.ctx) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
+  }
+
+  /** Volume of one channel: 'game' = harvest sounds, 'ui' = tree & interface sounds. */
+  setBus(bus: 'game' | 'ui', v: number) {
+    this.busLevels[bus] = v;
+    if (this.ctx) this[bus].gain.setTargetAtTime(0.9 * v, this.ctx.currentTime, 0.05);
+  }
+
+  /** Pause/resume all sound (used when the tab is hidden). */
+  setSuspended(off: boolean) {
+    if (!this.ctx) return;
+    if (off && this.ctx.state === 'running') void this.ctx.suspend();
+    if (!off && this.ctx.state === 'suspended') void this.ctx.resume();
+  }
+
+  private bus: 'game' | 'ui' = 'game';
+  /** Run fn with every sound it makes routed to the given channel. */
+  private on(bus: 'game' | 'ui', fn: () => void) {
+    this.bus = bus;
+    fn();
+    this.bus = 'game';
   }
 
   /** Rate limiter so dense moments do not turn into mush. */
@@ -86,7 +112,7 @@ class Audio {
     g.gain.exponentialRampToValueAtTime(peak, t0 + (opts.attack ?? 0.008));
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
     osc.connect(g);
-    g.connect(this.sfx);
+    g.connect(this[this.bus]);
     if (opts.verb) {
       const s = ctx.createGain();
       s.gain.value = opts.verb;
@@ -112,7 +138,7 @@ class Audio {
     const g = ctx.createGain();
     g.gain.setValueAtTime(opts.gain ?? 0.2, t0);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-    src.connect(f).connect(g).connect(this.sfx);
+    src.connect(f).connect(g).connect(this[this.bus]);
     if (opts.verb) {
       const s = ctx.createGain();
       s.gain.value = opts.verb;
@@ -125,38 +151,48 @@ class Audio {
   // ── Tree sounds ──────────────────────────────────────────────────────
   hover() {
     if (!this.gate('hover', 0.04)) return;
-    this.tone(2400 + Math.random() * 200, { dur: 0.05, gain: 0.025 });
+    this.on('ui', () => {
+      this.tone(2400 + Math.random() * 200, { dur: 0.05, gain: 0.025 });
+    });
   }
 
   purchase(step: number, big = false) {
     if (!this.gate('buy', 0.03)) return;
-    const s = 3 + step;
-    this.tone(noteHz(s), { dur: 1.2, gain: 0.16, verb: 0.8 });
-    this.tone(noteHz(s + 2), { dur: 1.0, gain: 0.11, verb: 0.8, delay: 0.07 });
-    this.tone(noteHz(s + 4), { dur: 1.4, gain: 0.09, verb: 0.9, delay: 0.14, type: 'triangle' });
-    this.noise({ dur: 0.25, gain: 0.05, type: 'highpass', freq: 5000 });
-    if (big) {
-      this.tone(65, { dur: 1.8, gain: 0.35, slide: 0.5 });
-      this.tone(noteHz(s - 5), { dur: 2.4, gain: 0.12, verb: 1, type: 'triangle', delay: 0.2 });
-      this.tone(noteHz(s + 7), { dur: 2.4, gain: 0.08, verb: 1, delay: 0.28 });
-      this.noise({ dur: 1.4, gain: 0.12, type: 'lowpass', freq: 3000, sweep: 0.05, verb: 0.6 });
-    }
+    this.on('ui', () => {
+      const s = 3 + step;
+      this.tone(noteHz(s), { dur: 1.2, gain: 0.16, verb: 0.8 });
+      this.tone(noteHz(s + 2), { dur: 1.0, gain: 0.11, verb: 0.8, delay: 0.07 });
+      this.tone(noteHz(s + 4), { dur: 1.4, gain: 0.09, verb: 0.9, delay: 0.14, type: 'triangle' });
+      this.noise({ dur: 0.25, gain: 0.05, type: 'highpass', freq: 5000 });
+      if (big) {
+        this.tone(65, { dur: 1.8, gain: 0.35, slide: 0.5 });
+        this.tone(noteHz(s - 5), { dur: 2.4, gain: 0.12, verb: 1, type: 'triangle', delay: 0.2 });
+        this.tone(noteHz(s + 7), { dur: 2.4, gain: 0.08, verb: 1, delay: 0.28 });
+        this.noise({ dur: 1.4, gain: 0.12, type: 'lowpass', freq: 3000, sweep: 0.05, verb: 0.6 });
+      }
+    });
   }
 
   reveal(i: number) {
     if (!this.gate('reveal' + (i % 4), 0.02)) return;
-    this.tone(noteHz(8 + i), { dur: 0.9, gain: 0.05, verb: 1, delay: 0.25 + i * 0.06, type: 'sine' });
+    this.on('ui', () => {
+      this.tone(noteHz(8 + i), { dur: 0.9, gain: 0.05, verb: 1, delay: 0.25 + i * 0.06, type: 'sine' });
+    });
   }
 
   deny() {
     if (!this.gate('deny', 0.1)) return;
-    this.tone(180, { type: 'square', dur: 0.14, gain: 0.05, slide: 0.6 });
-    this.tone(120, { type: 'square', dur: 0.18, gain: 0.04, slide: 0.6, delay: 0.07 });
+    this.on('ui', () => {
+      this.tone(180, { type: 'square', dur: 0.14, gain: 0.05, slide: 0.6 });
+      this.tone(120, { type: 'square', dur: 0.18, gain: 0.04, slide: 0.6, delay: 0.07 });
+    });
   }
 
   click() {
     if (!this.gate('click', 0.03)) return;
-    this.tone(1300, { dur: 0.06, gain: 0.05 });
+    this.on('ui', () => {
+      this.tone(1300, { dur: 0.06, gain: 0.05 });
+    });
   }
 
   // ── Harvest sounds ───────────────────────────────────────────────────
@@ -220,10 +256,12 @@ class Audio {
   }
 
   awaken() {
-    const chord = [0, 2, 4, 5, 7, 9, 10, 12];
-    chord.forEach((s, i) => this.tone(noteHz(s, 261.63), { dur: 5, gain: 0.07, verb: 1, attack: 0.6, delay: i * 0.18, type: i % 2 ? 'triangle' : 'sine' }));
-    this.tone(55, { dur: 4, gain: 0.35, attack: 0.4, slide: 0.5, delay: 1.4 });
-    this.noise({ dur: 4, gain: 0.15, type: 'lowpass', freq: 8000, sweep: 0.02, verb: 1, delay: 1.4 });
+    this.on('ui', () => {
+      const chord = [0, 2, 4, 5, 7, 9, 10, 12];
+      chord.forEach((s, i) => this.tone(noteHz(s, 261.63), { dur: 5, gain: 0.07, verb: 1, attack: 0.6, delay: i * 0.18, type: i % 2 ? 'triangle' : 'sine' }));
+      this.tone(55, { dur: 4, gain: 0.35, attack: 0.4, slide: 0.5, delay: 1.4 });
+      this.noise({ dur: 4, gain: 0.15, type: 'lowpass', freq: 8000, sweep: 0.02, verb: 1, delay: 1.4 });
+    });
   }
 }
 

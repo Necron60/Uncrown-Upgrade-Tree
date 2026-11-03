@@ -1,8 +1,9 @@
 import gsap from 'gsap';
 import { Application, BitmapFont, Container, Filter } from 'pixi.js';
 import { AdvancedBloomFilter } from 'pixi-filters/advanced-bloom';
-import { loadGame, newGame, saveGame, wipeSave, type GameState } from '../core/state';
+import { effectiveMotion, loadGame, newGame, saveGame, wipeSave, type Bloom, type GameState, type Motion } from '../core/state';
 import { hexToCss } from '../core/math';
+import { fmt } from '../core/format';
 import { NODES, NODE_MAP, PRISM_COLOR } from '../data/tree';
 import { Background } from '../render/background';
 import { Shake } from '../render/shake';
@@ -11,7 +12,8 @@ import { audio } from '../systems/audio';
 import { anyAffordable, buy, statsFor, type BuyResult } from '../systems/tree-logic';
 import { HarvestScene } from '../scenes/HarvestScene';
 import { TreeScene } from '../scenes/TreeScene';
-import { Ending, HarvestHud, SettingsPanel, Summary, Tooltip, TreeHud, colorOf, type RunResult } from '../ui/ui';
+import { NodeView } from '../scenes/tree/NodeView';
+import { Ending, HarvestHud, SettingsPanel, Summary, Tooltip, TreeHud, colorOf, h, roman, type RunResult } from '../ui/ui';
 
 type Mode = 'tree' | 'transition' | 'harvest' | 'summary' | 'finale';
 
@@ -19,6 +21,13 @@ type Mode = 'tree' | 'transition' | 'harvest' | 'summary' | 'finale';
 // the whole scene, so on HiDPI screens everything came out at half resolution and jagged.
 Filter.defaultOptions.resolution = 'inherit';
 Filter.defaultOptions.antialias = 'inherit';
+
+const PARTICLE_DENSITY = { low: 0.35, medium: 0.65, high: 1 } as const;
+const BLOOM_OPTIONS: Record<Exclude<Bloom, 'off'>, ConstructorParameters<typeof AdvancedBloomFilter>[0]> = {
+  // a high threshold keeps the glow on genuinely bright things (cores, sparks), not on whole regions
+  soft: { threshold: 0.7, bloomScale: 0.4, brightness: 1, blur: 5, quality: 4 },
+  full: { threshold: 0.62, bloomScale: 0.62, brightness: 1, blur: 7, quality: 5 },
+};
 
 export class Game {
   readonly app = new Application();
@@ -35,11 +44,14 @@ export class Game {
   readonly shake = new Shake(12, 0.012, 1.5);
   canvas!: HTMLCanvasElement;
   private sceneRoot = new Container();
-  private bloom: AdvancedBloomFilter | null = null;
+  private blooms: Partial<Record<Bloom, AdvancedBloomFilter>> = {};
   private mode: Mode = 'tree';
   private saveT = 0;
   private prevVolume = 0.7;
   private params = new URLSearchParams(location.search);
+  private fpsEl = h('div', 'fps num');
+  private fpsT = 0;
+  private bgDrift = 0;
 
   constructor() {
     if (this.params.has('fresh')) wipeSave();
@@ -48,10 +60,19 @@ export class Game {
       this.state.lumen += 5e6;
       this.state.prism += 5e3;
     }
-    if (this.params.has('lowfx')) this.state.settings.quality = 'low';
+    if (this.params.has('lowfx')) this.state.settings.bloom = 'off';
     if (this.params.has('ownall')) {
       for (const n of NODES) if (n.kind !== 'awaken') this.state.levels[n.id] = n.maxLevel;
     }
+  }
+
+  /** Motion settings as they apply right now (reduced motion overrides the individual ones). */
+  get motion(): Motion {
+    return effectiveMotion(this.state.settings);
+  }
+
+  get particleDensity(): number {
+    return PARTICLE_DENSITY[this.state.settings.particles];
   }
 
   async init() {
@@ -66,7 +87,7 @@ export class Game {
       resizeTo: window,
       antialias: true,
       backgroundAlpha: 0,
-      resolution: Math.min(window.devicePixelRatio || 1, 2),
+      resolution: this.renderResolution(),
       autoDensity: true,
       preference: 'webgl',
       powerPreference: 'high-performance',
@@ -96,20 +117,28 @@ export class Game {
     this.summary = new Summary(ui);
     this.settings = new SettingsPanel(ui);
     this.ending = new Ending(ui);
+    ui.append(this.fpsEl);
     this.wireUi();
 
     this.applySettings();
     this.resize();
     this.app.renderer.on('resize', () => this.resize());
     window.addEventListener('keydown', (e) => this.onKey(e));
-    document.addEventListener('visibilitychange', () => { if (document.hidden) this.save(); });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) this.save();
+      if (this.state.settings.muteHidden) audio.setSuspended(document.hidden);
+    });
     window.addEventListener('beforeunload', () => this.save());
 
     this.tree.enter(false);
-    // open with a slow zoom-in onto the seed
     const z = this.tree.fitZoom();
-    this.tree.cam.set(0, 34 / z, z * 0.6, true);
-    this.tree.recenter();
+    if (this.motion.cameraFx) {
+      // open with a slow zoom-in onto the seed
+      this.tree.cam.set(0, 34 / z, z * 0.6, true);
+      this.tree.recenter();
+    } else {
+      this.tree.recenter(true);
+    }
     this.hud.sync(this.state, false, !anyAffordable(this.state));
 
     // dtcap lets automated tests run in (near) real time on slow software renderers
@@ -150,17 +179,42 @@ export class Game {
     };
   }
 
+  private renderResolution(): number {
+    return Math.min(window.devicePixelRatio || 1, 2) * this.state.settings.resolution;
+  }
+
+  /** Push every setting to the systems that use it. Safe to call any time. */
   private applySettings() {
     const s = this.state.settings;
+    const m = this.motion;
+
+    // sound
     audio.setVolume(s.volume);
+    audio.setBus('game', s.sfxVolume);
+    audio.setBus('ui', s.uiVolume);
     this.hud.setMuted(s.volume <= 0);
-    this.shake.enabled = s.shake && !s.reducedMotion;
-    if (s.quality === 'high') {
-      this.bloom ??= new AdvancedBloomFilter({ threshold: 0.5, bloomScale: 0.8, brightness: 1, blur: 7, quality: 5 });
-      this.sceneRoot.filters = [this.bloom];
-    } else {
-      this.sceneRoot.filters = [];
+
+    // motion
+    this.shake.intensity = m.shake;
+    NodeView.ambient = m.ambient;
+    this.bg.ambient = m.ambient;
+
+    // graphics
+    if (s.bloom === 'off') this.sceneRoot.filters = [];
+    else this.sceneRoot.filters = [(this.blooms[s.bloom] ??= new AdvancedBloomFilter(BLOOM_OPTIONS[s.bloom]))];
+    const res = this.renderResolution();
+    if (Math.abs(this.app.renderer.resolution - res) > 1e-3) {
+      this.app.renderer.resize(this.app.screen.width, this.app.screen.height, res);
     }
+    this.tree.setFxDensity(this.particleDensity);
+    this.bg.setDetail(s.background);
+    this.app.ticker.maxFPS = s.fpsCap;
+    this.fpsEl.style.display = s.showFps ? '' : 'none';
+
+    // interface
+    document.documentElement.style.setProperty('--ui-scale', String(s.uiScale));
+    this.tooltip.scale = s.uiScale;
+    this.hud.setHints(s.hints);
   }
 
   private toggleMute() {
@@ -187,6 +241,7 @@ export class Game {
       if (k === ' ' || k === 'enter') { e.preventDefault(); void this.startHarvest(); }
       else if (k === 'c') this.tree.recenter();
       else if (k === 'm') this.toggleMute();
+      else if (k === 'escape') this.settings.show(this.state);
       else if (k === 'l' && this.params.has('dev')) { this.state.lumen += 1e5; this.state.prism += 50; this.walletChanged(); }
     } else if (this.mode === 'harvest') {
       if (k === 'escape') this.harvest?.forceEnd();
@@ -205,11 +260,25 @@ export class Game {
   }
 
   // ───────────────────────────────────────────── helpers
+  /** A brief full-screen flash, scaled by the player's flash setting. */
   flash(peak = 1, inDur = 0.2, outDur = 0.5, color = '#f4f7ff') {
+    const strength = this.motion.flashes;
+    if (strength <= 0.01) return;
     const el = document.getElementById('flash')!;
     el.style.background = color;
+    el.style.mixBlendMode = 'screen';
     gsap.killTweensOf(el);
-    gsap.timeline().to(el, { opacity: peak, duration: inDur, ease: 'power2.in' }).to(el, { opacity: 0, duration: outDur, ease: 'power2.out' });
+    gsap.timeline().to(el, { opacity: peak * strength, duration: inDur, ease: 'power2.in' }).to(el, { opacity: 0, duration: outDur, ease: 'power2.out' });
+  }
+
+  /** The scene-change veil: a bright wash, or a gentle dip to dark when flashes are turned down. */
+  private veil(): HTMLElement {
+    const el = document.getElementById('flash')!;
+    const bright = this.motion.flashes >= 0.5;
+    el.style.background = bright ? '#eaf6ff' : '#05050b';
+    el.style.mixBlendMode = bright ? 'screen' : 'normal';
+    gsap.killTweensOf(el);
+    return el;
   }
 
   save() {
@@ -262,11 +331,9 @@ export class Game {
     this.tooltip.hide();
     this.hud.show(false);
     this.tree.inputEnabled = false;
-    const reduced = this.state.settings.reducedMotion;
-    const dur = reduced ? 0.25 : 0.75;
-    const el = document.getElementById('flash')!;
-    el.style.background = '#eaf6ff';
-    gsap.killTweensOf(el);
+    const quick = this.state.settings.reducedMotion || !this.motion.cameraFx;
+    const dur = quick ? 0.35 : 0.75;
+    const el = this.veil();
     gsap.to(el, { opacity: 1, duration: dur * 0.6, delay: dur * 0.4, ease: 'power2.in' });
     await this.tree.diveIn(dur);
     this.tree.exit();
@@ -275,15 +342,15 @@ export class Game {
 
   private beginRun() {
     const stats = statsFor(this.state.levels);
-    const h = new HarvestScene(this, stats);
-    this.harvest = h;
-    h.resize(this.app.screen.width, this.app.screen.height);
-    this.sceneRoot.addChild(h.view);
-    h.onEnd = (r) => this.onRunEnd(r);
+    const hs = new HarvestScene(this, stats);
+    this.harvest = hs;
+    hs.resize(this.app.screen.width, this.app.screen.height);
+    this.sceneRoot.addChild(hs.view);
+    hs.onEnd = (r) => this.onRunEnd(r);
     document.body.classList.add('harvest');
     this.hhud.show(true, stats.comboPerKill > 0, stats.prismChance > 0 || stats.heart > 0);
     this.hhud.setTimer(stats.duration, stats.duration, false);
-    h.start();
+    hs.start();
     const el = document.getElementById('flash')!;
     gsap.to(el, { opacity: 0, duration: 0.6, ease: 'power2.out' });
     this.mode = 'harvest';
@@ -305,20 +372,23 @@ export class Game {
     this.save();
     document.body.classList.remove('harvest');
     this.mode = 'summary';
-    this.summary.show(r, record, s.lumen, L.runs);
+    if (s.settings.skipSummary) {
+      // straight back to the tree; the result is shown as an inscription instead
+      gsap.delayedCall(0.2, () => void this.leaveHarvest(false, { r, record }));
+    } else {
+      this.summary.show(r, record, s.lumen, L.runs);
+    }
     if (firstPrism) {
       gsap.delayedCall(1.4, () => this.hud.toast(`<span>you found</span><b>Prism</b><span>the rarest light</span>`, hexToCss(PRISM_COLOR), 3.5));
     }
   }
 
-  private async leaveHarvest(again: boolean) {
+  private async leaveHarvest(again: boolean, skipped?: { r: RunResult; record: boolean }) {
     if (this.mode !== 'summary') return;
     this.mode = 'transition';
-    audio.click();
-    await this.summary.hide();
-    const el = document.getElementById('flash')!;
-    el.style.background = '#eaf6ff';
-    gsap.killTweensOf(el);
+    if (!skipped) audio.click();
+    if (this.summary.isOpen) await this.summary.hide();
+    const el = this.veil();
     await new Promise<void>((res) => gsap.to(el, { opacity: 1, duration: 0.22, ease: 'power2.in', onComplete: res }));
     this.harvest?.destroy();
     this.harvest = null;
@@ -334,7 +404,11 @@ export class Game {
     this.hud.sync(this.state, true, !anyAffordable(this.state));
     gsap.to(el, { opacity: 0, duration: 0.7, ease: 'power2.out' });
     this.mode = 'tree';
-    if (this.state.lifetime.runs === 1) {
+    if (skipped) {
+      const p = skipped.r.prism > 0 ? ` · +${fmt(skipped.r.prism)} prism` : '';
+      this.hud.toast(`<span>Harvest ${roman(this.state.lifetime.runs)}</span><b>+${fmt(skipped.r.lumen)} lumen${p}</b>${skipped.record ? '<span>a new record</span>' : ''}`, 'var(--gold)', 2.4);
+    }
+    if (this.state.lifetime.runs === 1 && this.state.settings.hints) {
       gsap.delayedCall(1, () => this.hud.toast(`<span>spend your</span><b>Lumen</b><span>on a lit node to grow the Bloom</span>`, 'var(--gold)', 4));
     }
   }
@@ -350,7 +424,8 @@ export class Game {
     }
     const cam = this.tree.cam;
     if (this.mode === 'harvest' || (this.harvest && this.mode !== 'tree')) {
-      this.bg.update(dt, cam.x * 0.2, cam.y * 0.2 + performance.now() * 0.004, 1);
+      if (this.motion.ambient) this.bgDrift += dt * 4;
+      this.bg.update(dt, cam.x * 0.2, cam.y * 0.2 + this.bgDrift, 1);
     } else {
       this.bg.update(dt, cam.x, cam.y, cam.zoom);
     }
@@ -358,6 +433,13 @@ export class Game {
     this.harvest?.update(dt);
     this.shake.update(dt);
     this.tree.view.position.set(this.shake.x, this.shake.y);
+
+    if (s.settings.showFps) {
+      this.fpsT -= dt;
+      if (this.fpsT <= 0) {
+        this.fpsT = 0.5;
+        this.fpsEl.textContent = `${Math.round(this.app.ticker.FPS)} fps`;
+      }
+    }
   }
 }
-

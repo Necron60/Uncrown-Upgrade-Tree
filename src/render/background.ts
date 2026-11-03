@@ -39,6 +39,9 @@ export class Background {
   private h = 1;
   private t = 0;
   private nextShoot = 3;
+  /** twinkling, drifting nebulae and shooting stars (player setting) */
+  ambient = true;
+  private lowDetail = false;
 
   constructor() {
     const tex = textures();
@@ -59,10 +62,11 @@ export class Background {
     add(0, 0, 3.4, 0x3a2a8c, 0.75);
     add(-260, 180, 2.6, 0x16407a, 0.6);
     add(300, -200, 2.4, 0x4a1f6e, 0.55);
-    add(0, -620, 2.4, BRANCH_COLORS.force, 0.08, 'force');
-    add(620, 0, 2.4, BRANCH_COLORS.reach, 0.08, 'reach');
-    add(0, 620, 2.4, BRANCH_COLORS.flow, 0.08, 'flow');
-    add(-620, 0, 2.4, BRANCH_COLORS.fortune, 0.08, 'fortune');
+    // branch clouds sit far out behind their own branch, so they never pile up over the centre
+    add(0, -1050, 2.0, BRANCH_COLORS.force, 0.04, 'force');
+    add(1050, 0, 2.0, BRANCH_COLORS.reach, 0.04, 'reach');
+    add(0, 1050, 2.0, BRANCH_COLORS.flow, 0.04, 'flow');
+    add(-1050, 0, 2.0, BRANCH_COLORS.fortune, 0.04, 'fortune');
 
     this.starPc = new ParticleContainer({
       texture: tex.dot,
@@ -83,6 +87,12 @@ export class Background {
     this.starPc.update();
   }
 
+  /** low detail: no nebulae, no shooting stars, only the larger stars */
+  setDetail(level: 'low' | 'high') {
+    this.lowDetail = level === 'low';
+    this.nebLayer.visible = !this.lowDetail;
+  }
+
   resize(w: number, h: number) {
     this.w = w;
     this.h = h;
@@ -90,7 +100,8 @@ export class Background {
 
   /** 0..1 investment per branch → nebula brightness */
   setBranchGlow(branch: Branch, amount: number) {
-    for (const n of this.nebs) if (n.branch === branch) n.target = 0.08 + amount * 0.5;
+    // additive clouds add up toward white, so keep them a faint tint even when fully invested
+    for (const n of this.nebs) if (n.branch === branch) n.target = 0.04 + amount * 0.16;
   }
 
   update(dt: number, camX: number, camY: number, zoom: number) {
@@ -106,19 +117,21 @@ export class Background {
       if (y < 0) y += H;
       s.p.x = x - ext;
       s.p.y = y - ext;
-      s.p.alpha = s.base * (0.55 + 0.45 * Math.sin(this.t * s.tw + s.ph));
+      if (this.lowDetail && s.layer === 0) s.p.alpha = 0;
+      else s.p.alpha = this.ambient ? s.base * (0.55 + 0.45 * Math.sin(this.t * s.tw + s.ph)) : s.base * 0.75;
     }
 
     const nz = 0.55 + zoom * 0.25;
     for (const n of this.nebs) {
       n.s.x = w / 2 + (n.wx - camX * 0.35) * nz * 0.6;
       n.s.y = h / 2 + (n.wy - camY * 0.35) * nz * 0.6;
-      n.s.rotation += n.rot * dt;
+      if (this.ambient) n.s.rotation += n.rot * dt;
       n.s.alpha = damp(n.s.alpha, n.target, 1.5, dt);
     }
 
     // occasional shooting star
     this.nextShoot -= dt;
+    if (this.nextShoot <= 0 && (!this.ambient || this.lowDetail)) this.nextShoot = 2;
     if (this.nextShoot <= 0) {
       this.nextShoot = rand(4, 10);
       const s = new Sprite(textures().spark);

@@ -32,6 +32,8 @@ function shapePoints(def: NodeDef, r: number): number[] | null {
 }
 
 export class NodeView {
+  /** idle animation (breathing, rotating rings, expanding pulses, orbiting sparkles): player setting */
+  static ambient = true;
   readonly c = new Container();
   readonly inner = new Container();
   readonly def: NodeDef;
@@ -80,7 +82,7 @@ export class NodeView {
     this.halo.anchor.set(0.5);
     this.halo.blendMode = 'add';
     this.halo.tint = this.color;
-    this.halo.scale.set((this.r * (def.kind === 'core' ? 6 : 4.6)) / 128);
+    this.halo.scale.set((this.r * (def.kind === 'core' ? 5 : 3.8)) / 128);
 
     this.pulseRing = new Sprite(tex.ring);
     this.pulseRing.anchor.set(0.5);
@@ -178,7 +180,7 @@ export class NodeView {
       shape(this.body, 0.78).fill({ color: lerpColor(DARK, color, 0.5), alpha: 0.6 });
       shape(this.body).stroke({ width: 3, color: lerpColor(color, 0xffffff, 0.4), alpha: 1 });
       drawIcon(this.icon, def.icon, r * 0.5, 0xffffff, 1);
-      this.haloBase = st === 'maxed' ? 0.75 : 0.5;
+      this.haloBase = st === 'maxed' ? 0.46 : 0.32;
       // rotating dashed outer ring
       const rr = r + (def.maxLevel > 1 ? 15 : 9);
       const dashes = def.kind === 'keystone' ? 24 : 14;
@@ -218,7 +220,7 @@ export class NodeView {
     this.body.circle(0, 0, r).stroke({ width: 3, color: warm, alpha: 1 });
     this.body.circle(0, 0, r * 0.72).stroke({ width: 1.5, color: warm, alpha: 0.5 });
     drawIcon(this.icon, 'seed', r * 0.55, 0xffffff, 1);
-    this.haloBase = awakened ? 0.7 : this.awakenReady ? 0.7 : 0.55;
+    this.haloBase = awakened ? 0.55 : this.awakenReady ? 0.5 : 0.4;
     this.halo.tint = awakened ? 0xfff0d0 : 0xffc06a;
 
     // keystone quadrants
@@ -256,36 +258,45 @@ export class NodeView {
     const st = this.state;
     let breathe = 1;
     let haloPulse = 0;
+    const amb = NodeView.ambient;
     if (st === 'available' && this.affordable) {
-      breathe = 1 + Math.sin(t * 3 + this.phase) * 0.035;
-      haloPulse = Math.sin(t * 3 + this.phase) * 0.1;
-      // repeating outward ring
-      this.pulseT += dt / 1.7;
-      if (this.pulseT >= 1) this.pulseT -= 1;
-      const p = this.pulseT;
-      this.pulseRing.scale.set(((this.r * (1.05 + p * 0.9)) / 128) * 2.1);
-      this.pulseRing.alpha = (1 - p) * 0.45;
+      if (amb) {
+        breathe = 1 + Math.sin(t * 3 + this.phase) * 0.035;
+        haloPulse = Math.sin(t * 3 + this.phase) * 0.1;
+        // repeating outward ring
+        this.pulseT += dt / 1.7;
+        if (this.pulseT >= 1) this.pulseT -= 1;
+        const p = this.pulseT;
+        this.pulseRing.scale.set(((this.r * (1.05 + p * 0.9)) / 128) * 2.1);
+        this.pulseRing.alpha = (1 - p) * 0.45;
+      } else {
+        // still readable without motion: a fixed ring marks affordable nodes
+        this.pulseRing.scale.set(((this.r * 1.35) / 128) * 2.1);
+        this.pulseRing.alpha = 0.35;
+      }
     } else {
       this.pulseRing.alpha = 0;
     }
-    if (st === 'owned' || st === 'maxed') {
+    if (amb && (st === 'owned' || st === 'maxed')) {
       this.deco.rotation += dt * (this.def.kind === 'keystone' ? 0.25 : 0.4);
       haloPulse = Math.sin(t * 1.4 + this.phase) * 0.06;
     }
     if (this.def.kind === 'core') {
-      this.deco.rotation += dt * 0.08;
       this.quads.rotation = 0;
-      breathe = 1 + Math.sin(t * 1.6) * 0.025 * (this.awakenReady ? 2.5 : 1);
-      haloPulse = Math.sin(t * 1.6) * (this.awakenReady ? 0.16 : 0.1);
+      if (amb) {
+        this.deco.rotation += dt * 0.08;
+        breathe = 1 + Math.sin(t * 1.6) * 0.025 * (this.awakenReady ? 2.5 : 1);
+        haloPulse = Math.sin(t * 1.6) * (this.awakenReady ? 0.16 : 0.1);
+      }
     }
     const s = this.stateScale * this.hoverS * this.punch * breathe * (0.2 + 0.8 * this.pop);
     this.inner.scale.set(s);
     this.c.alpha = Math.min(1, this.pop * 1.4);
-    this.halo.alpha = Math.max(0, (this.haloBase + haloPulse + (this.hover ? 0.18 : 0)) * this.pop + this.flash);
-    this.halo.scale.set(((this.r * (this.def.kind === 'core' ? 6 : 4.6)) / 128) * (1 + this.flash * 0.6) * (this.awakened ? 1.2 : 1));
+    this.halo.alpha = Math.min(1, Math.max(0, (this.haloBase + haloPulse + (this.hover ? 0.15 : 0)) * this.pop + this.flash));
+    this.halo.scale.set(((this.r * (this.def.kind === 'core' ? 5 : 3.8)) / 128) * (1 + this.flash * 0.6) * (this.awakened ? 1.2 : 1));
 
     // orbiting sparkles for keystones / core / maxed
-    const showSpark = this.sparkles.length && (this.def.kind === 'core' || st === 'owned' || st === 'maxed');
+    const showSpark = amb && this.sparkles.length && (this.def.kind === 'core' || st === 'owned' || st === 'maxed');
     this.sparkles.forEach((sp, i) => {
       if (!showSpark) { sp.alpha = 0; return; }
       const a = t * (0.7 + i * 0.25) + (i * TAU) / this.sparkles.length + this.phase;

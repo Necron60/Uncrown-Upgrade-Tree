@@ -127,6 +127,8 @@ export class HarvestScene {
   private numPool: BitmapText[] = [];
   private arcs: Arc[] = [];
   private hitStop = 0;
+  /** bright kill flashes scale with the player's flash setting */
+  private flashScale = 1;
   /** rises with every flash, decays fast; dense moments get thinner glows so the screen never whites out */
   private heat = 0;
   private onMove = (e: PointerEvent) => {
@@ -150,8 +152,10 @@ export class HarvestScene {
     this.echoG.blendMode = 'add';
     this.echoG.visible = st.echoPower > 0;
     this.remaining = st.duration;
-    this.shake.enabled = game.state.settings.shake && !game.state.settings.reducedMotion;
-    this.fx.density = game.state.settings.quality === 'low' ? 0.6 : 1;
+    const motion = game.motion;
+    this.shake.intensity = motion.shake;
+    this.fx.density = game.particleDensity;
+    this.flashScale = Math.max(0.2, motion.flashes);
 
     const nSat = Math.round(st.satellites);
     for (let i = 0; i < nSat; i++) {
@@ -191,7 +195,7 @@ export class HarvestScene {
     const first = Math.min(this.st.maxShards, 6);
     for (let i = 0; i < first; i++) this.after(0.15 + i * 0.07, () => this.spawn());
     audio.whoosh();
-    this.game.hhud.showBanner('The Harvest', this.game.state.lifetime.runs === 0 ? 'move your lens over the shards' : '', 'rgba(150,220,255,0.7)');
+    this.game.hhud.showBanner('The Harvest', this.game.state.lifetime.runs === 0 && this.game.state.settings.hints ? 'move your lens over the shards' : '', 'rgba(150,220,255,0.7)');
     // lens materialises in place
     gsap.to(this, { lensIntro: 1, duration: 0.6, ease: 'back.out(2.2)' });
   }
@@ -403,10 +407,10 @@ export class HarvestScene {
     const fs = (s.r / 17) * 0.55;
     this.fx.emit({ x: s.x, y: s.y, texture: tex.frag, count: fragN, color: [s.color, 0xffffff, s.color], speed: [90, big ? 700 : 340], life: [0.45, 0.95], size: [fs * 0.5, fs], sizeEnd: 0.2, drag: 2.4, spin: [-14, 14], spread: s.r * 0.5 });
     this.fx.emit({ x: s.x, y: s.y, texture: tex.spark, count: big ? 60 : 10 + s.tier * 6, color: [s.color, 0xffffff], speed: [160, big ? 1100 : 520], life: [0.2, 0.5], size: [0.3, 0.55], drag: 3.5, stretch: 0.0035 });
-    const calm = 1 / (1 + this.heat * 0.35);
+    const calm = this.flashScale / (1 + this.heat * 0.35);
     this.heat += 1;
     if (big || this.heat < 10) {
-      this.fx.emit({ x: s.x, y: s.y, texture: tex.glow, count: 1, color: s.color, speed: [0, 0], life: [0.24, 0.24], size: [(s.r * 3.4) / 128, (s.r * 3.4) / 128], sizeEnd: 1.4, alpha: big ? 0.9 : 0.45 * calm });
+      this.fx.emit({ x: s.x, y: s.y, texture: tex.glow, count: 1, color: s.color, speed: [0, 0], life: [0.24, 0.24], size: [(s.r * 3.4) / 128, (s.r * 3.4) / 128], sizeEnd: 1.4, alpha: big ? 0.9 * this.flashScale : 0.45 * calm });
       this.fx.emit({ x: s.x, y: s.y, texture: tex.ring, count: 1, color: s.color, speed: [0, 0], life: [0.32, 0.32], size: [(s.r * 2) / 256, (s.r * 2) / 256], sizeEnd: big ? 8 : 2.6, alpha: big ? 0.9 : 0.5 * calm });
     }
     if (info.executed) {
@@ -420,7 +424,7 @@ export class HarvestScene {
     else if (s.type === 'prism') audio.special('prism');
 
     if (big) {
-      this.hitStop = 0.14;
+      if (this.game.motion.slowmo) this.hitStop = 0.14;
       this.shake.add(0.85);
       this.game.flash(0.55, 0.05, 0.5);
       audio.special('heart');
@@ -491,6 +495,7 @@ export class HarvestScene {
   }
 
   private number(x: number, y: number, v: number, crit: boolean) {
+    if (!this.game.state.settings.damageNumbers) return;
     if (this.nums.length > 70 && !crit) return;
     let t = this.numPool.pop();
     if (!t) {
@@ -876,7 +881,7 @@ export class HarvestScene {
     if (this.ended) return;
     this.ended = true;
     audio.runEnd();
-    gsap.to(this, { timeScale: 0.12, duration: 0.5, ease: 'power2.out' });
+    if (this.game.motion.slowmo) gsap.to(this, { timeScale: 0.12, duration: 0.5, ease: 'power2.out' });
     this.game.hhud.setTimer(0, 1, this.inOvertime);
     // remaining shards dissolve
     const tex = textures();
