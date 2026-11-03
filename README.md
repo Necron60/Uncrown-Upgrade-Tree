@@ -1,4 +1,4 @@
-# Lumen Bloom
+# Uncrown
 
 A browser upgrade-tree game that puts animation, light and game feel first.
 

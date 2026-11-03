@@ -1,6 +1,6 @@
 # Third-party notices
 
-Lumen Bloom's own source code is MIT-licensed (see [LICENSE](LICENSE)). The built game also bundles the following third-party software. Each keeps its own license.
+Uncrown's own source code is MIT-licensed (see [LICENSE](LICENSE)). The built game also bundles the following third-party software. Each keeps its own license.
 
 | Package | License | Notes |
 |---|---|---|
