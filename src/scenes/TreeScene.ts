@@ -1010,9 +1010,14 @@ export class TreeScene {
       this.dawn.visible = this.dawnR > 1;
     }
     this.updateTraces(dt);
+    // the woven strands sway; only branches on screen are updated
+    const hw = this.cam.w / 2 / this.cam.zoom, hh = this.cam.h / 2 / this.cam.zoom;
+    const view = { x0: this.cam.x - hw, y0: this.cam.y - hh, x1: this.cam.x + hw, y1: this.cam.y + hh };
+    const amb = this.game.motion.ambient;
     for (const e of this.edges) {
       e.tick(dt);
-      if (e.state === 'active' && e.grow >= 1 && this.game.motion.ambient) {
+      e.animate(t, amb, view);
+      if (e.state === 'active' && e.grow >= 1 && amb) {
         e.pulseTimer -= dt;
         if (e.pulseTimer <= 0) {
           e.pulseTimer = rand(1.4, 3.2) * (this.game.state.awakened ? 0.4 : 1);

@@ -12,6 +12,8 @@ export interface TextureBank {
   flare8: Texture;    // star: cross spikes + long diagonals (seed, keystones)
   flare6: Texture;    // star: six even rays (synergies)
   streakH: Texture;   // anamorphic horizontal light streak
+  ribbonGlow: Texture; // cross-section of a light strand: soft glow (stretched along a rope)
+  ribbonCore: Texture; // cross-section of a light strand: white-hot core
   dot: Texture;       // small hard-core dot
   spark: Texture;     // horizontal streak
   frag: Texture;      // crystal fragment (triangle)
@@ -266,6 +268,29 @@ function makeStreak(): Texture {
   return Texture.from(c);
 }
 
+/**
+ * The cross-section of a light strand, for MeshRope: across the height a falloff from the centre,
+ * along the length a short fade at both ends so strands melt into the stars they connect.
+ */
+function makeRibbon(profile: (d: number) => number): Texture {
+  const W = 128, H = 32;
+  const [c, ctx] = canvas(W, H);
+  const img = ctx.createImageData(W, H);
+  for (let y = 0; y < H; y++) {
+    const d = Math.abs((y + 0.5) / H - 0.5) * 2; // 0 at the centre line, 1 at the edge
+    const a = profile(d);
+    for (let x = 0; x < W; x++) {
+      const u = (x + 0.5) / W;
+      const end = Math.min(1, u / 0.06, (1 - u) / 0.06);
+      const i = (y * W + x) * 4;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = 255;
+      img.data[i + 3] = Math.round(255 * a * end);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return Texture.from(c);
+}
+
 let bank: TextureBank | null = null;
 
 export function textures(): TextureBank {
@@ -283,6 +308,9 @@ export function textures(): TextureBank {
     flare8: makeFlare([0, Math.PI / 2], [Math.PI / 4, (3 * Math.PI) / 4], 0.62),
     flare6: makeFlare([0, Math.PI / 3, (2 * Math.PI) / 3], [], 0),
     streakH: makeStreak(),
+    // a narrow bright peak over a faint wide haze, matching the old multi-pass strokes
+    ribbonGlow: makeRibbon((d) => 0.4 * Math.exp(-d * d * 14) + 0.1 * Math.exp(-d * d * 2.5)),
+    ribbonCore: makeRibbon((d) => Math.max(0, 1 - Math.pow(d, 1.6))),
     dot: radial(32, [[0, 1], [0.35, 0.9], [0.6, 0.3], [1, 0]]),
     spark: makeSpark(),
     frag: makeFrag(),
