@@ -28,6 +28,16 @@ npm run typecheck
 | Harvest | `Esc` | end the run early (you keep what you gathered) |
 | Summary | `Space` · `R` | back to the Bloom · harvest again |
 
+## Settings
+
+Press `Esc` in the Bloom, or use the sliders icon. Every option saves automatically.
+
+- **Graphics:** a low/medium/high preset; glow off/soft/full; render resolution 50–100%; particle amount; simple or rich background; frame-rate cap (30/60/120/max); frame counter.
+- **Motion:** a *Reduced motion* master switch, plus individual control of screen-shake strength, camera moves (zooming into and out of the seed, opening and finale moves), distortion ripples, flash strength (below 50%, scene changes fade to dark instead of white), slow motion / hit-stop, and ambient motion. Your OS reduced-motion preference is respected on first launch.
+- **Sound:** master, harvest and interface volume; silence while the tab is hidden.
+- **Interface:** interface size, damage numbers, hints, and skipping the harvest summary.
+- **Records:** lifetime stats, plus *Begin anew* to wipe your save.
+
 ## Tech
 
 - **Vite + TypeScript**

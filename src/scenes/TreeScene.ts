@@ -134,10 +134,19 @@ export class TreeScene {
     this.view.visible = true;
     this.sync();
     if (fromHarvest) {
-      // arrive by zooming out of the seed
-      this.cam.set(0, 0, 2.4, true);
-      this.cam.set(this.savedCam.x, this.savedCam.y, this.savedCam.z);
+      if (this.game.motion.cameraFx) {
+        // arrive by zooming out of the seed
+        this.cam.set(0, 0, 2.4, true);
+        this.cam.set(this.savedCam.x, this.savedCam.y, this.savedCam.z);
+      } else {
+        this.cam.set(this.savedCam.x, this.savedCam.y, this.savedCam.z, true);
+      }
     }
+  }
+
+  /** Particle amount (player setting). */
+  setFxDensity(d: number) {
+    this.fx.density = d;
   }
 
   /** Hide the tree. The camera to come back to was stored by diveIn(). */
@@ -150,11 +159,13 @@ export class TreeScene {
   diveIn(duration = 0.7): Promise<void> {
     this.savedCam = { x: this.cam.tx, y: this.cam.ty, z: this.cam.tz };
     this.setHovered(null);
+    // camera moves switched off: hold still while the screen fades
+    if (!this.game.motion.cameraFx) return new Promise((res) => gsap.delayedCall(duration, res));
     this.cam.locked = true;
     return new Promise((res) => {
       gsap.to(this.cam, { x: 0, y: 0, zoom: 3.2, duration, ease: 'power3.in', onComplete: () => { this.cam.locked = false; this.cam.set(0, 0, 3.2, true); res(); } });
       const core = this.nodes.get('seed')!;
-      gsap.to(core, { flash: 1.5, duration: duration * 0.9, ease: 'power2.in', onComplete: () => { core.flash = 0; } });
+      gsap.to(core, { flash: 1.5 * this.game.motion.flashes, duration: duration * 0.9, ease: 'power2.in', onComplete: () => { core.flash = 0; } });
     });
   }
 
@@ -405,6 +416,7 @@ export class TreeScene {
   }
 
   celebrate(nv: NodeView, res: Extract<BuyResult, { ok: true }>) {
+    const m = this.game.motion;
     const reduced = this.game.state.settings.reducedMotion;
     const big = nv.def.kind === 'keystone';
     const major = nv.def.kind === 'major' || nv.def.kind === 'synergy';
@@ -417,7 +429,7 @@ export class TreeScene {
       .to(nv, { punch: 0.8, duration: 0.07, ease: 'power2.in' })
       .to(nv, { punch: big ? 1.45 : 1.25, duration: 0.16, ease: 'power2.out' })
       .to(nv, { punch: 1, duration: 0.8, ease: 'elastic.out(1, 0.32)' });
-    nv.flash = big ? 1.4 : 0.9;
+    nv.flash = (big ? 1.4 : 0.9) * Math.max(0.25, m.flashes);
     gsap.to(nv, { flash: 0, duration: big ? 1.2 : 0.6, ease: 'power2.out' });
 
     this.shockRing(x, y, r, r * (big ? 7 : 3.6), color, big ? 1.1 : 0.7);
@@ -438,11 +450,11 @@ export class TreeScene {
 
     audio.purchase(Math.min(res.newLevel, 6) + (major ? 2 : 0), big);
 
-    if (big && !reduced) {
+    if (big) {
       this.game.shake.add(0.55);
       this.keystoneBeam(nv);
       this.shockwave(x, y, 16, 1.1);
-    } else if (major && !reduced) {
+    } else if (major) {
       this.game.shake.add(0.18);
     }
 
@@ -503,6 +515,7 @@ export class TreeScene {
 
   /** Screen-space displacement ripple (keystones, finale). */
   shockwave(wx: number, wy: number, amplitude = 28, dur = 1.3) {
+    if (!this.game.motion.ripples) return;
     const p = this.cam.worldToScreen(wx, wy);
     const f = new ShockwaveFilter({ center: { x: p.x, y: p.y }, amplitude, wavelength: 160, speed: 820, brightness: 1.12, radius: -1 });
     f.time = 0;
@@ -521,9 +534,14 @@ export class TreeScene {
   async awakenSequence(): Promise<void> {
     this.inputEnabled = false;
     this.setHovered(null);
-    this.cam.locked = true;
     const fit = this.fitZoom();
-    await new Promise<void>((res) => gsap.to(this.cam, { x: 0, y: 0, zoom: fit, duration: 1.6, ease: 'power3.inOut', onComplete: res }));
+    if (this.game.motion.cameraFx) {
+      this.cam.locked = true;
+      await new Promise<void>((res) => gsap.to(this.cam, { x: 0, y: 0, zoom: fit, duration: 1.6, ease: 'power3.inOut', onComplete: res }));
+    } else {
+      this.cam.set(0, 0, fit, true);
+      this.cam.locked = true;
+    }
     const tex = textures();
     // wave of light from the rim inward
     const byRing = [...this.nodes.values()].filter((n) => n.def.kind !== 'core').sort((a, b) => b.def.ring - a.def.ring);
@@ -541,7 +559,7 @@ export class TreeScene {
     const core = this.nodes.get('seed')!;
     audio.awaken();
     gsap.to(core, { punch: 2.3, duration: 1.4, ease: 'power2.in' });
-    gsap.to(core, { flash: 3, duration: 1.4, ease: 'power2.in' });
+    gsap.to(core, { flash: 3 * Math.max(0.25, this.game.motion.flashes), duration: 1.4, ease: 'power2.in' });
     await new Promise<void>((r) => gsap.delayedCall(1.4, r));
     this.game.flash(1, 0.15, 1.6);
     this.game.shake.add(0.9);
@@ -599,7 +617,7 @@ export class TreeScene {
     for (const nv of this.nodes.values()) nv.tick(dt, t);
     for (const e of this.edges) {
       e.tick(dt);
-      if (e.state === 'active' && e.grow >= 1) {
+      if (e.state === 'active' && e.grow >= 1 && this.game.motion.ambient) {
         e.pulseTimer -= dt;
         if (e.pulseTimer <= 0) {
           e.pulseTimer = rand(1.4, 3.2) * (this.game.state.awakened ? 0.4 : 1);
@@ -629,7 +647,7 @@ export class TreeScene {
 
     // ambient motes drifting off owned nodes
     this.ambientT -= dt;
-    if (this.ambientT <= 0 && !this.game.state.settings.reducedMotion) {
+    if (this.ambientT <= 0 && this.game.motion.ambient) {
       this.ambientT = 0.08;
       const owned = [...this.nodes.values()].filter((n) => n.state === 'owned' || n.state === 'maxed');
       if (owned.length) {

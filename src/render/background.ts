@@ -39,6 +39,9 @@ export class Background {
   private h = 1;
   private t = 0;
   private nextShoot = 3;
+  /** twinkling, drifting nebulae and shooting stars (player setting) */
+  ambient = true;
+  private lowDetail = false;
 
   constructor() {
     const tex = textures();
@@ -83,6 +86,12 @@ export class Background {
     this.starPc.update();
   }
 
+  /** low detail: no nebulae, no shooting stars, only the larger stars */
+  setDetail(level: 'low' | 'high') {
+    this.lowDetail = level === 'low';
+    this.nebLayer.visible = !this.lowDetail;
+  }
+
   resize(w: number, h: number) {
     this.w = w;
     this.h = h;
@@ -106,19 +115,21 @@ export class Background {
       if (y < 0) y += H;
       s.p.x = x - ext;
       s.p.y = y - ext;
-      s.p.alpha = s.base * (0.55 + 0.45 * Math.sin(this.t * s.tw + s.ph));
+      if (this.lowDetail && s.layer === 0) s.p.alpha = 0;
+      else s.p.alpha = this.ambient ? s.base * (0.55 + 0.45 * Math.sin(this.t * s.tw + s.ph)) : s.base * 0.75;
     }
 
     const nz = 0.55 + zoom * 0.25;
     for (const n of this.nebs) {
       n.s.x = w / 2 + (n.wx - camX * 0.35) * nz * 0.6;
       n.s.y = h / 2 + (n.wy - camY * 0.35) * nz * 0.6;
-      n.s.rotation += n.rot * dt;
+      if (this.ambient) n.s.rotation += n.rot * dt;
       n.s.alpha = damp(n.s.alpha, n.target, 1.5, dt);
     }
 
     // occasional shooting star
     this.nextShoot -= dt;
+    if (this.nextShoot <= 0 && (!this.ambient || this.lowDetail)) this.nextShoot = 2;
     if (this.nextShoot <= 0) {
       this.nextShoot = rand(4, 10);
       const s = new Sprite(textures().spark);
