@@ -1,11 +1,11 @@
 import { Container, Graphics } from 'pixi.js';
-import { DEG, lerp, lerpColor } from '../../core/math';
+import { DEG, TAU, lerp, lerpColor } from '../../core/math';
 import { RING_RADII } from '../../data/tree';
 import type { NodeView } from './NodeView';
 
 export type EdgeState = 'hidden' | 'ghost' | 'ready' | 'active';
 
-const SAMPLES = 24;
+const SAMPLES = 40;
 const smooth = (t: number) => t * t * (3 - 2 * t);
 
 /**
@@ -80,7 +80,40 @@ export class EdgeView {
     this.view.alpha = 1 - this.dim * 0.85;
   }
 
-  /** Draw the visible prefix [0, grow] of the curve, in colour chunks for a parent→child gradient. */
+  /**
+   * One strand of light woven around the branch: a sine offset along the curve's normal that
+   * fades to zero at both ends, so every strand meets the others inside the stars.
+   */
+  private strand(phase: number, amp: number, cycles: number): number[] {
+    const out: number[] = [];
+    const n = this.pts.length;
+    for (let i = 0; i < n; i++) {
+      const a = this.pts[Math.max(0, i - 1)];
+      const b = this.pts[Math.min(n - 1, i + 1)];
+      const tx = b.x - a.x, ty = b.y - a.y;
+      const tl = Math.hypot(tx, ty) || 1;
+      const t = this.cum[i] / this.length;
+      const off = amp * Math.pow(Math.sin(Math.PI * t), 0.9) * Math.sin(TAU * cycles * t + phase);
+      out.push(this.pts[i].x - (ty / tl) * off, this.pts[i].y + (tx / tl) * off);
+    }
+    return out;
+  }
+
+  /** Stroke the prefix of a flat point list that lies within the first `maxD` of arc length. */
+  private stroke(g: Graphics, flat: number[], maxD: number, width: number, color: number, alpha: number) {
+    g.moveTo(flat[0], flat[1]);
+    for (let i = 1; i < this.cum.length; i++) {
+      if (this.cum[i] > maxD) {
+        const f = (maxD - this.cum[i - 1]) / (this.cum[i] - this.cum[i - 1] || 1);
+        g.lineTo(lerp(flat[(i - 1) * 2], flat[i * 2], f), lerp(flat[(i - 1) * 2 + 1], flat[i * 2 + 1], f));
+        break;
+      }
+      g.lineTo(flat[i * 2], flat[i * 2 + 1]);
+    }
+    g.stroke({ width, color, alpha, cap: 'round', join: 'round' });
+  }
+
+  /** Draw the visible prefix [0, grow] of the branch. */
   redraw() {
     const { glow, line, hl } = this;
     glow.clear();
@@ -92,6 +125,8 @@ export class EdgeView {
     const cA = this.from.def.kind === 'core' ? this.to.color : this.from.color;
     const cB = this.to.color;
     const maxD = this.grow * this.length;
+    const centre: number[] = [];
+    for (const p of this.pts) centre.push(p.x, p.y);
 
     if (this.state === 'ghost') {
       // dotted
@@ -103,50 +138,34 @@ export class EdgeView {
       return;
     }
 
-    const active = this.state === 'active';
-    if (active && this.grow < 1) {
-      // light is still racing along: keep the dim branch underneath the bright stroke
-      line.moveTo(this.pts[0].x, this.pts[0].y);
-      for (let i = 1; i < this.pts.length; i++) line.lineTo(this.pts[i].x, this.pts[i].y);
-      line.stroke({ width: 2, color: cB, alpha: 0.32, cap: 'round', join: 'round' });
+    if (this.state === 'ready') {
+      // a single faint thread of light toward a node you could grow next
+      this.stroke(glow, centre, maxD, 6, cB, 0.05);
+      this.stroke(glow, centre, maxD, 1.6, cB, 0.32);
+      return;
     }
-    const chunks = 4;
-    const per = SAMPLES / chunks;
-    for (let c = 0; c < chunks; c++) {
-      const col = lerpColor(cA, cB, (c + 0.5) / chunks);
-      let started = false;
-      for (let i = c * per; i <= (c + 1) * per; i++) {
-        if (this.cum[i] > maxD) {
-          // partial tail
-          if (started && i > 0) {
-            const p = this.pointAt(maxD / this.length);
-            line.lineTo(p.x, p.y);
-            glow.lineTo(p.x, p.y);
-          }
-          break;
-        }
-        const p = this.pts[i];
-        if (!started) {
-          line.moveTo(p.x, p.y);
-          glow.moveTo(p.x, p.y);
-          started = true;
-        } else {
-          line.lineTo(p.x, p.y);
-          glow.lineTo(p.x, p.y);
-        }
-      }
-      if (!started) break;
-      line.stroke({ width: active ? 3 : 2, color: active ? lerpColor(col, 0xffffff, 0.1) : col, alpha: active ? 0.9 : 0.38, cap: 'round', join: 'round' });
-      glow.stroke({ width: active ? 10 : 7, color: col, alpha: active ? 0.11 : 0.05, cap: 'round', join: 'round' });
+
+    // active: three strands of light woven around the path, each with a soft glow and a hot core.
+    // Additive blending makes the crossings flare, like light trails crossing.
+    if (this.grow < 1) this.stroke(line, centre, this.length, 2, cB, 0.3); // dim branch under the incoming light
+    const amp = Math.min(11, Math.max(4, this.length * 0.045));
+    const cycles = Math.max(0.75, this.length / 170);
+    const strands: [number, number, number][] = [
+      [cA, 0, amp],
+      [cB, 2.1, amp * 0.82],
+      [lerpColor(lerpColor(cA, cB, 0.5), 0xffffff, 0.45), 4.2, amp * 0.55],
+    ];
+    for (const [col, phase, a] of strands) {
+      const pts = this.strand(phase, a, cycles);
+      this.stroke(glow, pts, maxD, 10, col, 0.045);
+      this.stroke(glow, pts, maxD, 4.6, col, 0.12);
+      this.stroke(glow, pts, maxD, 2, col, 0.42);
+      this.stroke(glow, pts, maxD, 0.85, lerpColor(col, 0xffffff, 0.7), 0.9);
     }
 
     // hover highlight overlay (alpha animated in tick)
-    hl.moveTo(this.pts[0].x, this.pts[0].y);
-    for (let i = 1; i < this.pts.length; i++) hl.lineTo(this.pts[i].x, this.pts[i].y);
-    hl.stroke({ width: 2, color: 0xffffff, alpha: 0.55, cap: 'round', join: 'round' });
-    hl.moveTo(this.pts[0].x, this.pts[0].y);
-    for (let i = 1; i < this.pts.length; i++) hl.lineTo(this.pts[i].x, this.pts[i].y);
-    hl.stroke({ width: 10, color: cB, alpha: 0.18, cap: 'round', join: 'round' });
+    this.stroke(hl, centre, this.length, 2, 0xffffff, 0.55);
+    this.stroke(hl, centre, this.length, 10, cB, 0.18);
     hl.alpha = this.highlight;
   }
 }

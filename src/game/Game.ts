@@ -1,6 +1,6 @@
 import gsap from 'gsap';
 import { Application, BitmapFont, Container, Filter } from 'pixi.js';
-import { AdvancedBloomFilter } from 'pixi-filters/advanced-bloom';
+import { HalfResBloom, type BloomOptions } from '../render/bloom';
 import { effectiveMotion, loadGame, newGame, saveGame, wipeSave, type Bloom, type GameState, type Motion } from '../core/state';
 import { hexToCss } from '../core/math';
 import { fmt } from '../core/format';
@@ -23,10 +23,10 @@ Filter.defaultOptions.resolution = 'inherit';
 Filter.defaultOptions.antialias = 'inherit';
 
 const PARTICLE_DENSITY = { low: 0.35, medium: 0.65, high: 1 } as const;
-const BLOOM_OPTIONS: Record<Exclude<Bloom, 'off'>, ConstructorParameters<typeof AdvancedBloomFilter>[0]> = {
+const BLOOM_OPTIONS: Record<Exclude<Bloom, 'off'>, BloomOptions> = {
   // a high threshold keeps the glow on genuinely bright things (cores, sparks), not on whole regions
-  soft: { threshold: 0.7, bloomScale: 0.4, brightness: 1, blur: 5, quality: 4 },
-  full: { threshold: 0.62, bloomScale: 0.62, brightness: 1, blur: 7, quality: 5 },
+  soft: { threshold: 0.7, bloomScale: 0.4, blur: 5, quality: 4 },
+  full: { threshold: 0.62, bloomScale: 0.62, blur: 7, quality: 5 },
 };
 
 export class Game {
@@ -44,7 +44,7 @@ export class Game {
   readonly shake = new Shake(12, 0.012, 1.5);
   canvas!: HTMLCanvasElement;
   private sceneRoot = new Container();
-  private blooms: Partial<Record<Bloom, AdvancedBloomFilter>> = {};
+  private blooms: Partial<Record<Bloom, HalfResBloom>> = {};
   private mode: Mode = 'tree';
   private saveT = 0;
   private prevVolume = 0.7;
@@ -232,8 +232,14 @@ export class Game {
 
     // graphics
     if (s.bloom === 'off') this.sceneRoot.filters = [];
-    else this.sceneRoot.filters = [(this.blooms[s.bloom] ??= new AdvancedBloomFilter(BLOOM_OPTIONS[s.bloom]))];
+    else this.sceneRoot.filters = [(this.blooms[s.bloom] ??= new HalfResBloom(BLOOM_OPTIONS[s.bloom]))];
     const res = this.renderResolution();
+    // Multisampling the full-screen glow/darkness passes was the single biggest GPU cost (≈35 → 60 fps
+    // without it on a fully grown tree). At ~2x pixel density edges look the same without it.
+    const aa = s.antialias === 'on' || (s.antialias === 'auto' && res < 1.75) ? 'inherit' : 'off';
+    Filter.defaultOptions.antialias = aa;
+    for (const f of Object.values(this.blooms)) if (f) f.antialias = aa;
+    this.tree.setFilterAntialias(aa);
     if (Math.abs(this.app.renderer.resolution - res) > 1e-3) {
       this.app.renderer.resize(this.app.screen.width, this.app.screen.height, res);
     }

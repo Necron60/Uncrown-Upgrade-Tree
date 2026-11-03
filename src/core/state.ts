@@ -21,6 +21,7 @@ export interface Settings {
   particles: Level3;
   background: 'low' | 'high';
   darkness: 'off' | 'dim' | 'deep'; // how dark the void is beyond the light of the tree
+  antialias: 'auto' | 'on' | 'off'; // multisampled edges inside the glow/darkness passes (auto: only below ~2x density)
   fpsCap: number; // 0 = match the display
   showFps: boolean;
   // interface
@@ -80,7 +81,7 @@ export function defaultSettings(): Settings {
   return {
     volume: 0.7, sfxVolume: 1, uiVolume: 1, muteHidden: true,
     reducedMotion: !!reduced, shake: 1, cameraFx: true, ripples: true, flashes: 1, slowmo: true, ambient: true,
-    ...GRAPHICS_PRESETS.high, darkness: 'deep', fpsCap: 0, showFps: false,
+    ...GRAPHICS_PRESETS.high, darkness: 'deep', antialias: 'auto', fpsCap: 0, showFps: false,
     uiScale: 1, damageNumbers: true, hints: true, skipSummary: false,
   };
 }
@@ -113,6 +114,7 @@ export function normalizeSettings(raw: unknown): Settings {
     particles: pick('particles', ['low', 'medium', 'high'] as const),
     background: pick('background', ['low', 'high'] as const),
     darkness: pick('darkness', ['off', 'dim', 'deep'] as const),
+    antialias: pick('antialias', ['auto', 'on', 'off'] as const),
     fpsCap: [0, 30, 60, 120].includes(r.fpsCap as number) ? (r.fpsCap as number) : d.fpsCap,
     showFps: bool('showFps'),
     uiScale: num('uiScale', 0.85, 1.3),

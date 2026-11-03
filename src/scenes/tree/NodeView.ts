@@ -1,12 +1,15 @@
 import { Container, Graphics, Sprite, Text } from 'pixi.js';
 import { TAU, damp, lerpColor, polar } from '../../core/math';
-import { BRANCH_COLORS, KEYSTONES, NODE_MAP, RING_RADII, nodeColor, nodeRadius, type NodeDef } from '../../data/tree';
+import { BRANCH_COLORS, KEYSTONES, NODE_MAP, RING_RADII, nodeColor, nodeRadius, type NodeDef, type NodeKind } from '../../data/tree';
 import { drawIcon } from '../../render/icons';
 import { textures } from '../../render/textures';
 import type { NodeState } from '../../systems/tree-logic';
 
 const DARK = 0x0b0d20;
 const GOLD = 0xffe6a0;
+
+/** Half-length of a grown node's star spikes, in world units. Sized so stars never reach a neighbour (nodes sit ≥160 apart). */
+const STAR_LEN: Record<NodeKind, number> = { core: 150, awaken: 150, keystone: 106, major: 70, synergy: 64, minor: 56 };
 
 function shapePoints(def: NodeDef, r: number): number[] | null {
   const pts: number[] = [];
@@ -50,6 +53,18 @@ export class NodeView {
   private q: Text;
   private sparkles: Sprite[] = [];
   private quads = new Graphics(); // core only: keystone quadrants
+  // a grown node is drawn as a star: flare spikes, a hot core and (keystones, seed) a long streak
+  private flare: Sprite;
+  private starCore: Sprite;
+  private streak: Sprite | null = null;
+  /** level ring, keystone quadrants and seed rings: stay visible when the node is a star */
+  private ringLayer = new Container();
+  /** 0..1: how much the node shows as a star */
+  star = 0;
+  /** >1 bursts the star's spikes outward (purchase), then settles back to 1 */
+  flareBoost = 1;
+  /** 0..1: the socket ring + icon. Hidden on stars unless hovered */
+  private frameA = 1;
 
   state: NodeState = 'hidden';
   level = 0;
@@ -105,9 +120,32 @@ export class NodeView {
     this.q.anchor.set(0.5);
     this.q.resolution = 3;
 
+    const isCore = def.kind === 'core';
+    this.flare = new Sprite(isCore || def.kind === 'keystone' ? tex.flare8 : def.kind === 'synergy' ? tex.flare6 : tex.flare4);
+    this.flare.anchor.set(0.5);
+    this.flare.blendMode = 'add';
+    this.flare.visible = false;
+    this.starCore = new Sprite(tex.dot);
+    this.starCore.anchor.set(0.5);
+    this.starCore.blendMode = 'add';
+    this.starCore.tint = isCore ? 0xfff1d0 : 0xffffff;
+    this.starCore.visible = false;
+    if (isCore || def.kind === 'keystone') {
+      this.streak = new Sprite(tex.streakH);
+      this.streak.anchor.set(0.5);
+      this.streak.blendMode = 'add';
+      this.streak.tint = isCore ? 0xffe0a8 : this.color;
+      this.streak.visible = false;
+    }
+
     this.c.visible = false;
-    this.c.addChild(this.halo, this.pulseRing, this.inner);
-    this.inner.addChild(this.deco, this.quads, this.progress, this.body, this.icon, this.q);
+    this.c.addChild(this.halo, this.pulseRing, this.flare);
+    if (this.streak) this.c.addChild(this.streak);
+    this.c.addChild(this.starCore, this.ringLayer, this.inner);
+    this.ringLayer.addChild(this.quads, this.progress);
+    if (isCore) this.ringLayer.addChildAt(this.deco, 0);
+    else this.inner.addChild(this.deco);
+    this.inner.addChild(this.body, this.icon, this.q);
 
     if (def.kind === 'core' || def.kind === 'keystone') {
       for (let i = 0; i < (def.kind === 'core' ? 3 : 2); i++) {
@@ -183,21 +221,11 @@ export class NodeView {
       drawIcon(this.icon, def.icon, r * 0.5, color, a ? 1 : 0.65);
       this.haloBase = a ? 0.32 : 0.12;
     } else {
-      // owned / maxed
-      shape(this.body).fill({ color: lerpColor(DARK, color, 0.32), alpha: 1 });
-      shape(this.body, 0.78).fill({ color: lerpColor(DARK, color, 0.5), alpha: 0.6 });
-      shape(this.body).stroke({ width: 3, color: lerpColor(color, 0xffffff, 0.4), alpha: 1 });
+      // owned / maxed: the node is a star now. Its socket and icon only show on hover
+      shape(this.body).fill({ color: DARK, alpha: 0.72 }).stroke({ width: 1.4, color: lerpColor(color, 0xffffff, 0.3), alpha: 0.85 });
       drawIcon(this.icon, def.icon, r * 0.5, 0xffffff, 1);
-      this.haloBase = st === 'maxed' ? 0.46 : 0.32;
-      // rotating dashed outer ring
-      const rr = r + (def.maxLevel > 1 ? 15 : 9);
-      const dashes = def.kind === 'keystone' ? 24 : 14;
-      for (let i = 0; i < dashes; i++) {
-        const a0 = (i / dashes) * TAU;
-        const a1 = a0 + (TAU / dashes) * 0.45;
-        this.deco.moveTo(Math.cos(a0) * rr, Math.sin(a0) * rr).arc(0, 0, rr, a0, a1)
-          .stroke({ width: 1.5, color: st === 'maxed' ? GOLD : color, alpha: st === 'maxed' ? 0.85 : 0.45 });
-      }
+      this.haloBase = st === 'maxed' ? 0.26 : 0.18;
+      this.flare.tint = st === 'maxed' ? lerpColor(color, GOLD, 0.55) : lerpColor(color, 0xffffff, 0.28);
     }
 
     // segmented level ring
@@ -214,8 +242,8 @@ export class NodeView {
           .stroke({ width: 3.2, color: on ? (st === 'maxed' ? GOLD : lerpColor(color, 0xffffff, 0.25)) : 0xffffff, alpha: on ? 1 : 0.1, cap: 'round' });
       }
     }
-    if (def.kind === 'keystone') {
-      shape(this.deco, 1.28).stroke({ width: 1.2, color, alpha: owned ? 0.5 : 0.18 });
+    if (def.kind === 'keystone' && !owned) {
+      shape(this.deco, 1.28).stroke({ width: 1.2, color, alpha: 0.18 });
     }
   }
 
@@ -228,7 +256,8 @@ export class NodeView {
     this.body.circle(0, 0, r).stroke({ width: 3, color: warm, alpha: 1 });
     this.body.circle(0, 0, r * 0.72).stroke({ width: 1.5, color: warm, alpha: 0.5 });
     drawIcon(this.icon, 'seed', r * 0.55, 0xffffff, 1);
-    this.haloBase = awakened ? 0.55 : this.awakenReady ? 0.5 : 0.4;
+    this.haloBase = awakened ? 0.5 : this.awakenReady ? 0.45 : 0.34;
+    this.flare.tint = awakened ? 0xfff4dc : 0xffdca0;
     this.halo.tint = awakened ? 0xfff0d0 : 0xffc06a;
 
     // keystone quadrants
@@ -299,6 +328,37 @@ export class NodeView {
     }
     const s = this.stateScale * this.hoverS * this.punch * breathe * (0.2 + 0.8 * this.pop);
     this.inner.scale.set(s);
+    this.ringLayer.scale.set(s);
+
+    // ── the star
+    const isCore = this.def.kind === 'core';
+    const ownedLike = isCore || st === 'owned' || st === 'maxed';
+    const starOn = ownedLike && !this.igniting;
+    this.star = damp(this.star, starOn ? 1 : 0, 7, dt);
+    this.frameA = damp(this.frameA, starOn ? (this.hover ? 1 : 0) : 1, 12, dt);
+    this.inner.alpha = this.frameA;
+    this.ringLayer.alpha = starOn && !isCore ? 0.28 + 0.72 * this.frameA : 1;
+    const on = this.star > 0.01;
+    this.flare.visible = this.starCore.visible = on;
+    if (this.streak) this.streak.visible = on;
+    if (on) {
+      // brighter with every level; gold and a touch larger when maxed
+      const lv = this.def.maxLevel > 1 ? this.level / this.def.maxLevel : 1;
+      const k = st === 'maxed' ? 1.08 : isCore ? 1 : 0.62 + 0.38 * lv;
+      const tw = amb ? 1 + Math.sin(t * 2.1 + this.phase) * 0.06 : 1;
+      const ready = isCore && this.awakenReady ? 1.1 + (amb ? Math.sin(t * 2.4) * 0.08 : 0) : 1;
+      const len = STAR_LEN[this.def.kind] * k * tw * ready * this.flareBoost * this.punch * (1 + this.flash * 0.25) * (this.hover ? 1.1 : 1) * (0.35 + 0.65 * this.star);
+      this.flare.scale.set((len * 2) / 512);
+      this.flare.rotation = amb ? Math.sin(t * 0.37 + this.phase) * 0.035 : 0;
+      this.flare.alpha = this.star * (0.88 + (amb ? Math.sin(t * 3.3 + this.phase * 2) * 0.12 : 0.06));
+      const coreR = this.r * (isCore ? 0.42 : 0.3) * (0.75 + 0.25 * k) * this.punch;
+      this.starCore.scale.set((coreR * 2) / 32);
+      this.starCore.alpha = this.star * (1 - 0.8 * this.frameA);
+      if (this.streak) {
+        this.streak.scale.set((len * 3.2) / 512, isCore ? 1.1 : 0.85);
+        this.streak.alpha = this.star * 0.65;
+      }
+    }
     this.c.alpha = Math.min(1, this.pop * 1.4) * (1 - this.dim * 0.8);
     this.halo.alpha = Math.min(1, Math.max(0, (this.haloBase + haloPulse + (this.hover ? 0.15 : 0)) * this.pop + this.flash));
     this.halo.scale.set(((this.r * (this.def.kind === 'core' ? 5 : 3.8)) / 128) * (1 + this.flash * 0.6) * (this.awakened ? 1.2 : 1));

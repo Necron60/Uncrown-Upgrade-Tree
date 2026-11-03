@@ -8,6 +8,10 @@ import { TAU } from '../core/math';
 export interface TextureBank {
   glow: Texture;      // soft radial falloff
   pool: Texture;      // broad, flat-topped light pool (used to cut holes in the darkness)
+  flare4: Texture;    // star: long cross spikes + short diagonals
+  flare8: Texture;    // star: cross spikes + long diagonals (seed, keystones)
+  flare6: Texture;    // star: six even rays (synergies)
+  streakH: Texture;   // anamorphic horizontal light streak
   dot: Texture;       // small hard-core dot
   spark: Texture;     // horizontal streak
   frag: Texture;      // crystal fragment (triangle)
@@ -202,6 +206,66 @@ function makeShard(sides: number, flash: boolean): Texture {
   return Texture.from(c);
 }
 
+/**
+ * A lens-flare star: a hot core and thin spikes that fade to nothing at the tips.
+ * Each spike is a long, very thin rhombus with a gradient along its length, drawn twice
+ * (a soft wide pass and a crisp narrow one) and added together.
+ */
+function makeFlare(main: number[], diag: number[], diagLen: number, size = 512): Texture {
+  const [c, ctx] = canvas(size);
+  const m = size / 2;
+  ctx.translate(m, m);
+  ctx.globalCompositeOperation = 'lighter';
+  const core = ctx.createRadialGradient(0, 0, 0, 0, 0, size * 0.06);
+  core.addColorStop(0, 'rgba(255,255,255,1)');
+  core.addColorStop(0.3, 'rgba(255,255,255,0.6)');
+  core.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = core;
+  ctx.fillRect(-m, -m, size, size);
+  const spike = (ang: number, len: number, w: number, a: number) => {
+    ctx.save();
+    ctx.rotate(ang);
+    const g = ctx.createLinearGradient(-len, 0, len, 0);
+    // bright for most of its length, fading only toward the very tips
+    const stops: [number, number][] = [[0, 0], [0.1, 0.06], [0.26, 0.3], [0.4, 0.68], [0.5, 1], [0.6, 0.68], [0.74, 0.3], [0.9, 0.06], [1, 0]];
+    for (const [o, k] of stops) g.addColorStop(o, `rgba(255,255,255,${k * a})`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(-len, 0);
+    ctx.lineTo(0, -w);
+    ctx.lineTo(len, 0);
+    ctx.lineTo(0, w);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  };
+  const L = m * 0.98;
+  for (const a of main) {
+    spike(a, L, size * 0.036, 0.4);
+    spike(a, L * 0.96, size * 0.013, 1);
+  }
+  for (const a of diag) {
+    spike(a, L * diagLen, size * 0.024, 0.32);
+    spike(a, L * diagLen * 0.94, size * 0.009, 0.85);
+  }
+  return Texture.from(c);
+}
+
+function makeStreak(): Texture {
+  const [c, ctx] = canvas(512, 32);
+  const g = ctx.createLinearGradient(0, 0, 512, 0);
+  for (const [o, k] of [[0, 0], [0.25, 0.08], [0.42, 0.4], [0.5, 1], [0.58, 0.4], [0.75, 0.08], [1, 0]] as [number, number][]) g.addColorStop(o, `rgba(255,255,255,${k})`);
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.ellipse(256, 16, 256, 3, 0, 0, TAU);
+  ctx.fill();
+  ctx.globalAlpha = 0.35;
+  ctx.beginPath();
+  ctx.ellipse(256, 16, 256, 9, 0, 0, TAU);
+  ctx.fill();
+  return Texture.from(c);
+}
+
 let bank: TextureBank | null = null;
 
 export function textures(): TextureBank {
@@ -215,6 +279,10 @@ export function textures(): TextureBank {
   bank = {
     glow: radial(128, [[0, 1], [0.15, 0.75], [0.4, 0.25], [0.7, 0.06], [1, 0]]),
     pool: radial(256, [[0, 1], [0.3, 0.96], [0.55, 0.72], [0.75, 0.34], [0.9, 0.09], [1, 0]]),
+    flare4: makeFlare([0, Math.PI / 2], [Math.PI / 4, (3 * Math.PI) / 4], 0.38),
+    flare8: makeFlare([0, Math.PI / 2], [Math.PI / 4, (3 * Math.PI) / 4], 0.62),
+    flare6: makeFlare([0, Math.PI / 3, (2 * Math.PI) / 3], [], 0),
+    streakH: makeStreak(),
     dot: radial(32, [[0, 1], [0.35, 0.9], [0.6, 0.3], [1, 0]]),
     spark: makeSpark(),
     frag: makeFrag(),

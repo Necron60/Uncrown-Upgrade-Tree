@@ -1,7 +1,7 @@
 import gsap from 'gsap';
 import { AlphaFilter, Container, Graphics, Sprite, Text } from 'pixi.js';
 import { ShockwaveFilter } from 'pixi-filters/shockwave';
-import { TAU, pick, rand } from '../core/math';
+import { TAU, lerpColor, pick, rand } from '../core/math';
 import { fmt } from '../core/format';
 import { BRANCH_COLORS, KEYSTONES, NODES, NODE_MAP, RING_RADII, type Branch } from '../data/tree';
 import { Particles } from '../render/particles';
@@ -28,7 +28,9 @@ interface Trace {
   grow: boolean; // draw the branch in behind the head
   head: Sprite;
   core: Sprite;
-  streak: Sprite;
+  /** the light ribbon trailing behind the head */
+  tail: Graphics;
+  trail: number[]; // recent head positions, flat x,y
   onSeg?: (i: number, at: NodeView, e: EdgeView) => void;
   onDone?: () => void;
 }
@@ -236,6 +238,10 @@ export class TreeScene {
   setDarkness(level: keyof typeof DARKNESS) {
     this.darkTarget = this.game.state.awakened ? 0 : DARKNESS[level];
     if (!this.view.visible) this.darkAlpha = this.darkTarget;
+  }
+
+  setFilterAntialias(aa: 'inherit' | 'off') {
+    for (const f of this.darkLayer.filters ?? []) f.antialias = aa;
   }
 
   /** Radius of light a node should cast in its current state. */
@@ -544,15 +550,16 @@ export class TreeScene {
       this.traceLayer.addChild(sp);
       return sp;
     };
-    const streak = mk(tex.spark, o.color);
-    streak.anchor.set(1, 0.5);
+    const tail = new Graphics();
+    tail.blendMode = 'add';
+    this.traceLayer.addChildAt(tail, 0);
     const head = mk(tex.glow, o.color);
     head.scale.set(0.55 * size);
     const core = mk(tex.dot, 0xffffff);
     core.scale.set(0.42 * size);
     const tr: Trace = {
       segs, i: 0, d: 0, v: 260, vmax: o.vmax ?? 1400, accel: o.accel ?? 5200, size, color: o.color,
-      grow: o.grow ?? false, head, core, streak, onSeg: o.onSeg, onDone: o.onDone,
+      grow: o.grow ?? false, head, core, tail, trail: [], onSeg: o.onSeg, onDone: o.onDone,
     };
     this.traces.push(tr);
     return tr;
@@ -594,7 +601,7 @@ export class TreeScene {
         const last = tr.segs[tr.segs.length - 1];
         const end = last.rev ? last.e.from : last.e.to;
         this.fx.emit({ x: end.x, y: end.y, texture: tex.star4, count: 1, color: 0xffffff, speed: [0, 0], life: [0.3, 0.3], size: [0.9 * tr.size, 0.9 * tr.size], sizeEnd: 0, spin: [2, 3] });
-        for (const sp of [tr.head, tr.core, tr.streak]) gsap.to(sp, { alpha: 0, duration: 0.18, onComplete: () => sp.destroy() });
+        for (const sp of [tr.head, tr.core, tr.tail]) gsap.to(sp, { alpha: 0, duration: sp === tr.tail ? 0.35 : 0.18, onComplete: () => sp.destroy() });
         this.traces.splice(k, 1);
         tr.onDone?.();
         continue;
@@ -608,11 +615,29 @@ export class TreeScene {
       const ang = Math.atan2(p.y - q.y, p.x - q.x);
       tr.head.position.set(p.x, p.y);
       tr.core.position.set(p.x, p.y);
-      tr.streak.position.set(p.x, p.y);
-      tr.streak.rotation = ang;
-      tr.streak.scale.set((0.7 + tr.v * 0.0011) * tr.size, 0.5 * tr.size);
-      this.fx.emit({ x: p.x, y: p.y, texture: tex.spark, count: 1, color: [tr.color, 0xffffff], speed: [20, 90], angle: [ang + Math.PI - 0.5, ang + Math.PI + 0.5], life: [0.16, 0.32], size: [0.22 * tr.size, 0.38 * tr.size], drag: 4, stretch: 0.004 });
-      if (Math.random() < 0.55) this.fx.emit({ x: p.x, y: p.y, texture: tex.dot, count: 1, color: tr.color, speed: [4, 30], life: [0.35, 0.7], size: [0.14 * tr.size, 0.26 * tr.size], drag: 2, spread: 3 });
+      // a ribbon of light along the head's recent path: glow passes plus a white-hot core, fading toward the tail
+      tr.trail.push(p.x, p.y);
+      if (tr.trail.length > 36) tr.trail.splice(0, 2);
+      this.drawTail(tr);
+      if (Math.random() < 0.5) this.fx.emit({ x: p.x, y: p.y, texture: tex.spark, count: 1, color: [tr.color, 0xffffff], speed: [20, 80], angle: [ang + Math.PI - 0.5, ang + Math.PI + 0.5], life: [0.16, 0.3], size: [0.2 * tr.size, 0.32 * tr.size], drag: 4, stretch: 0.004 });
+      if (Math.random() < 0.4) this.fx.emit({ x: p.x, y: p.y, texture: tex.dot, count: 1, color: tr.color, speed: [4, 30], life: [0.35, 0.7], size: [0.14 * tr.size, 0.26 * tr.size], drag: 2, spread: 3 });
+    }
+  }
+
+  private drawTail(tr: Trace) {
+    const g = tr.tail;
+    g.clear();
+    const pts = tr.trail;
+    const n = pts.length / 2;
+    if (n < 2) return;
+    const hot = lerpColor(tr.color, 0xffffff, 0.7);
+    for (let i = 1; i < n; i++) {
+      const f = i / (n - 1); // 0 = tail end, 1 = at the head
+      const x0 = pts[(i - 1) * 2], y0 = pts[(i - 1) * 2 + 1], x1 = pts[i * 2], y1 = pts[i * 2 + 1];
+      const k = f * f;
+      g.moveTo(x0, y0).lineTo(x1, y1).stroke({ width: 12 * tr.size * (0.4 + 0.6 * f), color: tr.color, alpha: 0.07 * k, cap: 'butt' });
+      g.moveTo(x0, y0).lineTo(x1, y1).stroke({ width: 4.5 * tr.size * (0.4 + 0.6 * f), color: tr.color, alpha: 0.32 * k, cap: 'butt' });
+      g.moveTo(x0, y0).lineTo(x1, y1).stroke({ width: 1.6 * tr.size * (0.5 + 0.5 * f), color: hot, alpha: 0.95 * k, cap: 'butt' });
     }
   }
 
@@ -674,7 +699,10 @@ export class TreeScene {
 
     nv.igniting = false;
     this.placeLayers();
-    gsap.killTweensOf(nv, 'punch,flash,light');
+    gsap.killTweensOf(nv, 'punch,flash,light,flareBoost');
+    // the socket becomes a star: its spikes burst far out, then draw back to size
+    nv.star = Math.max(nv.star, 0.85);
+    gsap.fromTo(nv, { flareBoost: big ? 2.6 : first ? 2.3 : 1.6 }, { flareBoost: 1, duration: first ? 1.3 : 0.8, ease: 'expo.out' });
     gsap.timeline()
       .to(nv, { punch: big ? 1.5 : first ? 1.3 : 1.2, duration: 0.14, ease: 'power2.out' })
       .to(nv, { punch: 1, duration: 0.8, ease: 'elastic.out(1, 0.32)' });
@@ -831,6 +859,7 @@ export class TreeScene {
     // 2 ─ four lights race home from the keystones, re-lighting every node they pass
     const relight = (n: NodeView, i: number) => {
       gsap.to(n, { dim: 0, duration: 0.35, ease: 'power2.out' });
+      gsap.fromTo(n, { flareBoost: 1.9 }, { flareBoost: 1, duration: 1, ease: 'expo.out' });
       gsap.fromTo(n, { flash: 0.9 * fs }, { flash: 0, duration: 0.8 });
       gsap.fromTo(n, { punch: 1.25 }, { punch: 1, duration: 0.7, ease: 'elastic.out(1, 0.35)' });
       gsap.to(n, { light: this.lightTargetOf(n) * 0.75, duration: 0.6, ease: 'expo.out' });
@@ -900,6 +929,7 @@ export class TreeScene {
       const delay = 2.8 * (1 - Math.sqrt(1 - Math.min(1, d / 4600))); // inverse of power2.out
       gsap.delayedCall(delay, () => {
         gsap.to(n, { dim: 0, duration: 0.4 });
+        gsap.fromTo(n, { flareBoost: 2 }, { flareBoost: 1, duration: 1.2, ease: 'expo.out' });
         for (const e of this.edges) if (e.to === n && e.dim > 0) gsap.to(e, { dim: 0, duration: 0.5 });
         gsap.fromTo(n, { flash: 1 * fs }, { flash: 0, duration: 0.9 });
         gsap.fromTo(n, { punch: 1.3 }, { punch: 1, duration: 0.8, ease: 'elastic.out(1, 0.35)' });
