@@ -1,0 +1,19 @@
+[Unit]
+Description=Uncrown cloud saves
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/node /opt/uncrown-saves/saves.mjs
+EnvironmentFile=/etc/uncrown-saves.env
+# its own throwaway user, a private data directory (/var/lib/uncrown-saves) and nothing else writable
+DynamicUser=yes
+StateDirectory=uncrown-saves
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

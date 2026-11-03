@@ -351,3 +351,12 @@ body.still .shine, body.still .boot-seed { animation: none; }
   .rite { font-size: 14px; padding: 0 16px; }
   .hint { display: none; }
 }
+
+/* ─── account (Discord sign-in, cloud saves) ───────────── */
+.account-btn img { width: 24px; height: 24px; border-radius: 50%; display: block; }
+.account-btn.signed-in { padding: 0; }
+a.text-btn { text-decoration: none; }
+.who { display: inline-flex; align-items: center; gap: 8px; }
+.who .avatar { width: 22px; height: 22px; border-radius: 50%; }
+.account-actions { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 14px; }
+.note + .account-actions { justify-content: flex-start; }

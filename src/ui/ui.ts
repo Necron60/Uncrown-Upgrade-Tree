@@ -2,6 +2,7 @@ import gsap from 'gsap';
 import { fmt, fmtTime } from '../core/format';
 import { hexToCss } from '../core/math';
 import { GRAPHICS_PRESETS, type GameState, type Settings } from '../core/state';
+import { cloud, type CloudStatus } from '../core/cloud';
 import {
   BRANCH_COLORS, BRANCH_NAMES, KEYSTONES, KIND_NAMES, NODE_MAP, NODES, PRISM_COLOR, nodeColor, type NodeDef,
 } from '../data/tree';
@@ -27,7 +28,11 @@ const ICON = {
   settings: SVG('<path d="M3 5.5h14M3 10h14M3 14.5h14" opacity=".55"/><path d="M7 3.6 8.9 5.5 7 7.4 5.1 5.5Z M13 8.1 14.9 10 13 11.9 11.1 10Z M8.5 12.6 10.4 14.5 8.5 16.4 6.6 14.5Z" fill="#0b0a12"/>'),
   sound: SVG('<path d="M3.5 7.5h3l4-3.5v12l-4-3.5h-3z"/><path d="M13.5 7.2a4 4 0 0 1 0 5.6M15.8 5a7 7 0 0 1 0 10"/>'),
   mute: SVG('<path d="M3.5 7.5h3l4-3.5v12l-4-3.5h-3z"/><path d="M13.5 7.5l5 5M18.5 7.5l-5 5"/>'),
+  account: SVG('<circle cx="10" cy="7" r="3.3"/><path d="M3.8 17.2c.9-3.3 3.4-5 6.2-5s5.3 1.7 6.2 5"/>'),
 };
+
+const avatarUrl = (id: string, avatar: string) => `https://cdn.discordapp.com/avatars/${id}/${avatar}.png?size=64`;
+const esc = (t: string) => t.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 const ROMAN: [number, string][] = [[1000, 'M'], [900, 'CM'], [500, 'D'], [400, 'CD'], [100, 'C'], [90, 'XC'], [50, 'L'], [40, 'XL'], [10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']];
 export function roman(n: number): string {
@@ -91,6 +96,7 @@ export class TreeHud {
   readonly harvestBtn: HTMLButtonElement;
   readonly awakenBtn: HTMLButtonElement;
   readonly settingsBtn: HTMLButtonElement;
+  readonly accountBtn: HTMLButtonElement;
   readonly centerBtn: HTMLButtonElement;
   readonly muteBtn: HTMLButtonElement;
   private hint: HTMLElement;
@@ -117,7 +123,9 @@ export class TreeHud {
     this.centerBtn = btn(ICON.center, 'Recenter (C)');
     this.muteBtn = btn(ICON.sound, 'Mute (M)');
     this.settingsBtn = btn(ICON.settings, 'Settings');
-    tr.append(this.centerBtn, this.muteBtn, this.settingsBtn);
+    this.accountBtn = btn(ICON.account, 'Sign in with Discord');
+    this.accountBtn.classList.add('account-btn');
+    tr.append(this.accountBtn, this.centerBtn, this.muteBtn, this.settingsBtn);
 
     this.chip = h('div', 'chip');
 
@@ -141,6 +149,17 @@ export class TreeHud {
       el.style.setProperty('--mx', `${((e.clientX - r.left) / r.width) * 100}%`);
       el.style.setProperty('--my', `${((e.clientY - r.top) / r.height) * 100}%`);
     });
+  }
+
+  /** Hidden where there is no backend; the player's Discord avatar once signed in. */
+  setAccount(c: typeof cloud) {
+    const b = this.accountBtn;
+    b.style.display = c.status === 'unavailable' ? 'none' : '';
+    const u = c.user;
+    b.title = u ? `Signed in as ${u.name}` : 'Sign in with Discord to save your progress in the cloud';
+    b.setAttribute('aria-label', b.title);
+    b.innerHTML = u?.avatar ? `<img src="${avatarUrl(u.id, u.avatar)}" alt="">` : ICON.account;
+    b.classList.toggle('signed-in', !!u);
   }
 
   setMuted(muted: boolean) {
@@ -489,8 +508,9 @@ export class Summary {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-type Tab = 'graphics' | 'motion' | 'sound' | 'interface' | 'records';
-const TABS: [Tab, string][] = [['graphics', 'Graphics'], ['motion', 'Motion'], ['sound', 'Sound'], ['interface', 'Interface'], ['records', 'Records']];
+type Tab = 'graphics' | 'motion' | 'sound' | 'interface' | 'records' | 'account';
+export type SettingsTab = Tab;
+const TABS: [Tab, string][] = [['graphics', 'Graphics'], ['motion', 'Motion'], ['sound', 'Sound'], ['interface', 'Interface'], ['records', 'Records'], ['account', 'Account']];
 const UI_SIZES: [string, string][] = [['0.9', 'small'], ['1', 'normal'], ['1.15', 'large'], ['1.3', 'larger']];
 
 const choice = (k: string, opts: [string, string][], cur: string) =>
@@ -519,9 +539,10 @@ export class SettingsPanel {
   }
 
   /** endRun: when given (opened from a harvest), the footer offers to end the run early. */
-  show(state: GameState, endRun: (() => void) | null = null) {
+  show(state: GameState, endRun: (() => void) | null = null, tab?: Tab) {
     this.state = state;
     this.endRun = endRun;
+    if (tab) this.tab = tab;
     this.open = true;
     this.render();
     this.wrap.classList.add('on');
@@ -533,6 +554,32 @@ export class SettingsPanel {
     if (!this.open) return;
     this.open = false;
     gsap.to(this.wrap, { opacity: 0, duration: 0.2, onComplete: () => this.wrap.classList.remove('on') });
+  }
+
+  /** Cloud status changed: redraw if the Account tab is the one showing. */
+  refreshAccount() {
+    if (this.open && this.tab === 'account') this.render();
+  }
+
+  private account(): string {
+    if (cloud.status === 'unavailable') return '<div class="note">Cloud saves are available on the hosted version of the game. Your progress is saved in this browser.</div>';
+    const u = cloud.user;
+    if (!u) {
+      return `<div class="note">Sign in with Discord to keep your progress in the cloud and continue on any device. Only your Discord name and avatar are used.</div>
+        <div class="account-actions"><a class="text-btn primary" href="/api/login"><span class="shine">Sign in with Discord</span></a></div>`;
+    }
+    const ago = cloud.lastSync ? fmtTime(Math.max(1, (Date.now() - cloud.lastSync) / 1000)) + ' ago' : 'not yet';
+    const status: Record<CloudStatus, string> = {
+      unavailable: '', 'signed-out': '', saving: 'Saving…', synced: `Saved ${ago}`,
+      behind: 'Another device saved newer progress. Reload to continue from it.',
+      error: 'Could not reach the cloud. It retries with the next save.',
+    };
+    const face = u.avatar ? `<img class="avatar" src="${avatarUrl(u.id, u.avatar)}" alt="">` : '';
+    return [
+      row('Signed in as', `<span class="who">${face}${esc(u.name)}</span>`),
+      row('Cloud save', esc(status[cloud.status])),
+      `<div class="account-actions"><span class="note">Signing out keeps your progress in this browser.</span><a class="text-btn" href="/api/logout">Sign out</a></div>`,
+    ].join('');
   }
 
   private body(): string {
@@ -590,6 +637,8 @@ export class SettingsPanel {
           row('Hints', toggle('hints', s.hints), 'Help lines under the harvest button and first-time tips.'),
           row('Skip harvest summary', toggle('skipSummary', s.skipSummary), 'Go straight back to the Bloom; the result shows as a short line instead.'),
         ].join('');
+      case 'account':
+        return this.account();
       case 'records': {
         const L = this.state.lifetime;
         return `<div class="ledger-sm">

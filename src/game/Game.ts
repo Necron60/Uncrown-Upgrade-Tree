@@ -13,7 +13,8 @@ import { anyAffordable, buy, statsFor, type BuyResult } from '../systems/tree-lo
 import { HarvestScene } from '../scenes/HarvestScene';
 import { TreeScene } from '../scenes/TreeScene';
 import { NodeView } from '../scenes/tree/NodeView';
-import { Ending, HarvestHud, SettingsPanel, Summary, Tooltip, TreeHud, colorOf, h, roman, type RunResult } from '../ui/ui';
+import { Ending, HarvestHud, SettingsPanel, Summary, Tooltip, TreeHud, colorOf, h, roman, type RunResult, type SettingsTab } from '../ui/ui';
+import { cloud } from '../core/cloud';
 
 type Mode = 'tree' | 'transition' | 'harvest' | 'summary' | 'finale';
 
@@ -135,10 +136,16 @@ export class Game {
     this.app.renderer.on('resize', () => this.resize());
     window.addEventListener('keydown', (e) => this.onKey(e));
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) this.save();
+      if (document.hidden) {
+        this.save();
+        cloud.flush();
+      }
       if (this.state.settings.muteHidden) audio.setSuspended(document.hidden);
     });
-    window.addEventListener('beforeunload', () => this.save());
+    window.addEventListener('beforeunload', () => {
+      this.save();
+      cloud.flush();
+    });
 
     this.tree.enter(false);
     const z = this.tree.fitZoom();
@@ -189,8 +196,25 @@ export class Game {
       wipeSave();
       this.state = newGame();
       saveGame(this.state);
-      location.reload();
+      // the cloud copy has more progress, so it would win at the next boot unless it is overwritten too
+      void cloud.replace(this.state).finally(() => location.reload());
     };
+    this.hud.accountBtn.addEventListener('click', () => {
+      audio.click();
+      if (cloud.status === 'signed-out') location.href = '/api/login';
+      else this.openSettings('account');
+    });
+    cloud.onChange = () => {
+      this.hud.setAccount(cloud);
+      this.settings.refreshAccount();
+      if (cloud.status === 'behind') this.hud.toast('<span>newer progress is saved from</span><b>another device</b><span>reload to continue it</span>', 'var(--accent)', 6);
+    };
+    this.hud.setAccount(cloud);
+    const loginError = this.params.get('error');
+    if (loginError) {
+      this.hud.toast(`<span>Discord</span><b>${loginError.replace(/[<>&]/g, '')}</b>`, 'var(--bad)', 5);
+      history.replaceState(null, '', location.pathname);
+    }
     this.ending.onContinue = () => {
       this.mode = 'tree';
       this.tree.inputEnabled = true;
@@ -200,8 +224,8 @@ export class Game {
   }
 
   /** From a harvest the run pauses while the panel is open, and the panel can end it early. */
-  private openSettings() {
-    this.settings.show(this.state, this.mode === 'harvest' ? () => this.harvest?.forceEnd() : null);
+  private openSettings(tab?: SettingsTab) {
+    this.settings.show(this.state, this.mode === 'harvest' ? () => this.harvest?.forceEnd() : null, tab);
   }
 
   /** Music level for the current scene: the Music-in-the-harvest setting applies while a harvest is on screen. */
@@ -340,6 +364,7 @@ export class Game {
 
   save() {
     saveGame(this.state);
+    cloud.push(this.state);
   }
 
   private walletChanged() {

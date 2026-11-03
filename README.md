@@ -47,6 +47,52 @@ Press `Esc` (in the Bloom or during a harvest, which pauses it), or use the slid
 - **Web Audio**: a soundtrack by Scott Buckley (CC-BY 4.0, streamed) under calm CC0 sound effects (kalimba, soft vibraphone, marimba, chimes and drums from VCSL; a singing bowl and bubble pops from BigSoundBank) re-pitched onto a pentatonic scale, with a generated reverb. In a Harvest only breaking shards make a sound. Credits are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 - **HTML/CSS** overlay for the HUD, tooltips and modals: quiet solid panels, one ice accent for state, gold only for Lumen; a system UI font for labels and numbers, Cormorant Garamond for names and titles.
 
+## Hosting
+
+The game is static (Vite build in `dist/`) and runs anywhere. On Vercel it also gets **Discord sign-in and cloud saves**, on the same infrastructure as the Rejoin verify panel and wiki: the same OAuth flow, and a small save service on the same VPS behind the same nginx.
+
+```
+browser ──Discord OAuth──> /api/login, /api/callback   (signed cookie, 30 days, identify scope only)
+        ──/api/me────────> who is signed in (the game asks before it boots)
+        ──/api/save──────> proxy (adds SAVES_TOKEN) ──> server/saves.mjs on the VPS, one JSON file per account
+```
+
+Without `/api` (local dev, any other host) the account button hides itself and the game keeps its save in the browser only. Signed in, the browser save stays the working copy. The cloud copy is read once at boot (the one with more play time wins) and written a few seconds after each save. A device that has fallen behind is refused (409) instead of overwriting newer progress, and *Begin anew* forces its reset through.
+
+### 1. Save service on the VPS
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"   # SAVES_TOKEN
+```
+
+```powershell
+ssh root@107.152.36.220 "mkdir -p /opt/uncrown-saves"
+scp server\saves.mjs root@107.152.36.220:/opt/uncrown-saves/
+scp server\uncrown-saves.service root@107.152.36.220:/etc/systemd/system/
+ssh root@107.152.36.220 "umask 077 && echo SAVES_TOKEN=<token> > /etc/uncrown-saves.env && systemctl daemon-reload && systemctl enable --now uncrown-saves"
+```
+
+It listens on `127.0.0.1:48760` and keeps its files in `/var/lib/uncrown-saves` (with one `.prev.json` of history per account). Give it a path on the nginx server block that already serves `107-152-36-220.sslip.io` for the verify bot:
+
+```nginx
+location /uncrown/ {
+    proxy_pass http://127.0.0.1:48760/;
+    client_max_body_size 128k;
+}
+```
+
+`nginx -t && systemctl reload nginx`, then `curl https://107-152-36-220.sslip.io/uncrown/health` should answer `{"ok":true}`. Code updates are the first `scp` plus `systemctl restart uncrown-saves`.
+
+### 2. Discord
+
+Developer Portal → the verify panel's application (or any other) → OAuth2 → add the redirect `https://<this game's domain>/api/callback`, exactly, no trailing slash.
+
+### 3. Vercel
+
+The project is linked as `uncrown` (`.vercel/`). Set the variables in [.env.example](.env.example) for Production: `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET`, `SESSION_SECRET`, `PUBLIC_URL`, `SAVES_API_URL`, `SAVES_TOKEN`. Then `vercel deploy --prod`. `vercel.json` pins the Vite build; the functions come from `api/` (files starting with `_` are helpers, not routes).
+
+`npm test` covers the login cookie (forgery, foreign key, expiry) and runs the save service for real: token, path checks, the behind-device refusal, the forced reset and the write limit.
+
 ## Project layout
 
 ```
@@ -57,7 +103,11 @@ src/scenes/TreeScene.ts   the Bloom: camera, nodes, branches, purchase/reveal ch
 src/scenes/HarvestScene.ts the run: lens, shards, satellites, arcs, novas, motes
 src/render/               generated textures, particle system, starfield, icons, shake
 src/ui/                   HUD, tooltip, summary, settings, ending
+src/core/cloud.ts         Discord account + cloud save mirror (client side)
+api/                      Vercel functions: Discord login, session, save proxy
+server/                   the save service and its systemd unit, for the VPS
 tests/balance.test.ts     headless playthrough sim (SIMALL=1 prints every run)
+tests/cloud.test.mjs      login cookie + save service checks
 ```
 
 ## Dev URL flags
