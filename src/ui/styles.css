@@ -62,7 +62,7 @@ kbd::after { content: ']'; margin-left: 1px; }
 /* ─── boot ─────────────────────────────────────────────── */
 #boot {
   position: fixed; inset: 0; display: grid; place-items: center; align-content: center; gap: 26px;
-  background: var(--void); z-index: 100; transition: opacity 0.9s ease;
+  background: var(--void); z-index: 100; transition: opacity 0.45s ease;
 }
 #boot.gone { opacity: 0; pointer-events: none; }
 .boot-seed {

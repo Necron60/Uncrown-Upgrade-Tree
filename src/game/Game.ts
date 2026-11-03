@@ -1,6 +1,6 @@
 import gsap from 'gsap';
 import { Application, BitmapFont, Container, Filter } from 'pixi.js';
-import { AdvancedBloomFilter } from 'pixi-filters/advanced-bloom';
+import { HalfResBloom, type BloomOptions } from '../render/bloom';
 import { effectiveMotion, loadGame, newGame, saveGame, wipeSave, type Bloom, type GameState, type Motion } from '../core/state';
 import { hexToCss } from '../core/math';
 import { fmt } from '../core/format';
@@ -23,10 +23,10 @@ Filter.defaultOptions.resolution = 'inherit';
 Filter.defaultOptions.antialias = 'inherit';
 
 const PARTICLE_DENSITY = { low: 0.35, medium: 0.65, high: 1 } as const;
-const BLOOM_OPTIONS: Record<Exclude<Bloom, 'off'>, ConstructorParameters<typeof AdvancedBloomFilter>[0]> = {
+const BLOOM_OPTIONS: Record<Exclude<Bloom, 'off'>, BloomOptions> = {
   // a high threshold keeps the glow on genuinely bright things (cores, sparks), not on whole regions
-  soft: { threshold: 0.7, bloomScale: 0.4, brightness: 1, blur: 5, quality: 4 },
-  full: { threshold: 0.62, bloomScale: 0.62, brightness: 1, blur: 7, quality: 5 },
+  soft: { threshold: 0.7, bloomScale: 0.4, blur: 5, quality: 4 },
+  full: { threshold: 0.62, bloomScale: 0.62, blur: 7, quality: 5 },
 };
 
 export class Game {
@@ -44,7 +44,7 @@ export class Game {
   readonly shake = new Shake(12, 0.012, 1.5);
   canvas!: HTMLCanvasElement;
   private sceneRoot = new Container();
-  private blooms: Partial<Record<Bloom, AdvancedBloomFilter>> = {};
+  private blooms: Partial<Record<Bloom, HalfResBloom>> = {};
   private mode: Mode = 'tree';
   private saveT = 0;
   private prevVolume = 0.7;
@@ -76,7 +76,16 @@ export class Game {
   }
 
   async init() {
-    await Promise.all([
+    // startup phases are timed with performance marks (visible in DevTools → Performance)
+    let last = 'start';
+    performance.mark('init:start');
+    const phase = (name: string) => {
+      performance.mark(`init:${name}`);
+      performance.measure(`init ${name}`, `init:${last}`, `init:${name}`);
+      last = name;
+    };
+    // fonts download while the renderer starts; only canvas text further down needs them
+    const fonts = Promise.all([
       document.fonts.load('600 20px "IBM Plex Mono"'),
       document.fonts.load('500 20px "IBM Plex Mono"'),
       document.fonts.load('italic 600 20px "Cormorant Garamond"'),
@@ -91,17 +100,16 @@ export class Game {
       autoDensity: true,
       preference: 'webgl',
       powerPreference: 'high-performance',
+      // input is handled with plain DOM events, so Pixi's per-pointer-move hit testing is pure overhead
+      eventFeatures: { move: false, globalMove: false, click: false, wheel: false },
     });
     this.canvas = this.app.canvas;
     document.getElementById('stage')!.appendChild(this.canvas);
-
-    BitmapFont.install({
-      name: 'dmg',
-      style: { fontFamily: 'IBM Plex Mono', fontSize: 44, fontWeight: '600', fill: 0xffffff, stroke: { color: 0x07060e, width: 7, join: 'round' } },
-      chars: [['0', '9'], ['A', 'Z'], '.+-!×◆ ', ['a', 'z']],
-      resolution: 2,
-    });
+    phase('renderer');
+    await fonts;
+    phase('fonts');
     textures();
+    phase('textures');
 
     this.bg = new Background();
     this.app.stage.addChild(this.sceneRoot);
@@ -109,6 +117,7 @@ export class Game {
     this.sceneRoot.filterArea = this.app.screen;
     this.tree = new TreeScene(this);
     this.sceneRoot.addChild(this.tree.view);
+    phase('scenes');
 
     const ui = document.getElementById('ui')!;
     this.hud = new TreeHud(ui);
@@ -140,15 +149,24 @@ export class Game {
       this.tree.recenter(true);
     }
     this.hud.sync(this.state, false, !anyAffordable(this.state));
+    phase('ui');
+    this.app.renderer.render(this.app.stage); // first frame: uploads textures, compiles shaders
+    phase('first-frame');
 
     // dtcap lets automated tests run in (near) real time on slow software renderers
     const cap = parseFloat(this.params.get('dtcap') ?? '') || 1 / 20;
     if (this.params.has('dtcap')) gsap.ticker.lagSmoothing(0); // tests: UI tweens follow real time too
-    this.app.ticker.add((tk) => this.update(Math.min(tk.deltaMS / 1000, cap)));
+    // timescale slows everything down so tests can photograph fast animations mid-flight
+    const ts = parseFloat(this.params.get('timescale') ?? '') || 1;
+    if (ts !== 1) gsap.globalTimeline.timeScale(ts);
+    this.app.ticker.add((tk) => this.update(Math.min(tk.deltaMS / 1000, cap) * ts));
 
     const boot = document.getElementById('boot')!;
     boot.classList.add('gone');
-    setTimeout(() => boot.remove(), 1000);
+    setTimeout(() => boot.remove(), 600);
+    // the damage-number font is only needed in a harvest: build it once the tree is up
+    const idle = window.requestIdleCallback ?? ((cb: () => void) => setTimeout(cb, 200));
+    idle(() => this.ensureDamageFont());
     gsap.from(this.hud.root.querySelectorAll('.hud-tl, .hud-tr, .chip, .hud-bottom'), { y: -16, opacity: 0, stagger: 0.08, duration: 0.7, delay: 0.3, ease: 'power3.out' });
   }
 
@@ -179,6 +197,19 @@ export class Game {
     };
   }
 
+  private damageFont = false;
+  /** Bitmap atlas for damage numbers. Built lazily: only harvests use it. */
+  private ensureDamageFont() {
+    if (this.damageFont) return;
+    this.damageFont = true;
+    BitmapFont.install({
+      name: 'dmg',
+      style: { fontFamily: 'IBM Plex Mono', fontSize: 44, fontWeight: '600', fill: 0xffffff, stroke: { color: 0x07060e, width: 7, join: 'round' } },
+      chars: [['0', '9'], ['A', 'Z'], '.+-!×◆ ', ['a', 'z']],
+      resolution: 2,
+    });
+  }
+
   private renderResolution(): number {
     return Math.min(window.devicePixelRatio || 1, 2) * this.state.settings.resolution;
   }
@@ -201,13 +232,20 @@ export class Game {
 
     // graphics
     if (s.bloom === 'off') this.sceneRoot.filters = [];
-    else this.sceneRoot.filters = [(this.blooms[s.bloom] ??= new AdvancedBloomFilter(BLOOM_OPTIONS[s.bloom]))];
+    else this.sceneRoot.filters = [(this.blooms[s.bloom] ??= new HalfResBloom(BLOOM_OPTIONS[s.bloom]))];
     const res = this.renderResolution();
+    // Multisampling the full-screen glow/darkness passes was the single biggest GPU cost (≈35 → 60 fps
+    // without it on a fully grown tree). At ~2x pixel density edges look the same without it.
+    const aa = s.antialias === 'on' || (s.antialias === 'auto' && res < 1.75) ? 'inherit' : 'off';
+    Filter.defaultOptions.antialias = aa;
+    for (const f of Object.values(this.blooms)) if (f) f.antialias = aa;
+    this.tree.setFilterAntialias(aa);
     if (Math.abs(this.app.renderer.resolution - res) > 1e-3) {
       this.app.renderer.resize(this.app.screen.width, this.app.screen.height, res);
     }
     this.tree.setFxDensity(this.particleDensity);
     this.bg.setDetail(s.background);
+    this.tree.setDarkness(s.darkness);
     this.app.ticker.maxFPS = s.fpsCap;
     this.fpsEl.style.display = s.showFps ? '' : 'none';
 
@@ -341,6 +379,7 @@ export class Game {
   }
 
   private beginRun() {
+    this.ensureDamageFont();
     const stats = statsFor(this.state.levels);
     const hs = new HarvestScene(this, stats);
     this.harvest = hs;
