@@ -70,15 +70,7 @@ kbd {
   font-size: 10.5px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-faint);
 }
 
-/* ─── boot ─────────────────────────────────────────────── */
-#boot {
-  position: fixed; inset: 0; display: grid; place-items: center; align-content: center; gap: 26px;
-  background: var(--void); z-index: 100; transition: opacity 0.45s ease;
-}
-#boot.gone { opacity: 0; pointer-events: none; }
-.boot-seed { width: 8px; height: 8px; transform: rotate(45deg); background: var(--gold-hi); animation: bootpulse 1.6s ease-in-out infinite; }
-.boot-title { font-family: var(--serif); font-weight: 500; font-size: 30px; letter-spacing: 0.3em; padding-left: 0.3em; color: var(--text); }
-@keyframes bootpulse { 50% { opacity: 0.35; } }
+/* ─── boot: styled inline in index.html, so it shows before this stylesheet loads ─── */
 
 /* ─── panels ───────────────────────────────────────────── */
 .plate {
@@ -339,7 +331,7 @@ input[type='range']:hover::-webkit-slider-thumb { background: #fff; }
 
 /* motion off: no comet, no sheen */
 body.still .rite::before, body.still .text-btn.primary::before { display: none; }
-body.still .shine, body.still .boot-seed { animation: none; }
+body.still .shine { animation: none; }
 
 @media (max-width: 680px) {
   .readout .lbl, .chip { display: none; }

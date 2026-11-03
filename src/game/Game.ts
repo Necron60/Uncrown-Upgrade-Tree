@@ -9,6 +9,7 @@ import { Background } from '../render/background';
 import { Shake } from '../render/shake';
 import { textures } from '../render/textures';
 import { audio } from '../systems/audio';
+import { boot } from '../ui/boot';
 import { anyAffordable, buy, statsFor, type BuyResult } from '../systems/tree-logic';
 import { HarvestScene } from '../scenes/HarvestScene';
 import { TreeScene } from '../scenes/TreeScene';
@@ -81,11 +82,25 @@ export class Game {
     // startup phases are timed with performance marks (visible in DevTools → Performance)
     let last = 'start';
     performance.mark('init:start');
-    const phase = (name: string) => {
+    // each finished phase moves the loading screen on and names the next one
+    const NEXT: Record<string, [number, string]> = {
+      renderer: [0.4, 'loading type'],
+      fonts: [0.5, 'cutting crystals'],
+      textures: [0.62, 'growing the Bloom'],
+      scenes: [0.76, 'tuning the stars'],
+      ui: [0.9, 'first light'],
+    };
+    const phase = async (name: string) => {
       performance.mark(`init:${name}`);
       performance.measure(`init ${name}`, `init:${last}`, `init:${name}`);
       last = name;
+      const next = NEXT[name];
+      if (next) boot.step(...next);
+      // hand the browser a moment between phases: the loading screen can paint, and startup is no
+      // longer one long blocking task
+      await new Promise((r) => setTimeout(r, 0));
     };
+    boot.step(0.24, 'waking the renderer');
     // fonts download while the renderer starts; only canvas text further down needs them
     const fonts = Promise.all([
       document.fonts.load('600 20px "IBM Plex Mono"'),
@@ -107,11 +122,11 @@ export class Game {
     });
     this.canvas = this.app.canvas;
     document.getElementById('stage')!.appendChild(this.canvas);
-    phase('renderer');
+    await phase('renderer');
     await fonts;
-    phase('fonts');
+    await phase('fonts');
     textures();
-    phase('textures');
+    await phase('textures');
 
     this.bg = new Background(this.app.renderer);
     this.app.stage.addChild(this.sceneRoot);
@@ -119,7 +134,7 @@ export class Game {
     this.sceneRoot.filterArea = this.app.screen;
     this.tree = new TreeScene(this);
     this.sceneRoot.addChild(this.tree.view);
-    phase('scenes');
+    await phase('scenes');
 
     const ui = document.getElementById('ui')!;
     this.hud = new TreeHud(ui);
@@ -157,9 +172,9 @@ export class Game {
       this.tree.recenter(true);
     }
     this.hud.sync(this.state, false, !anyAffordable(this.state));
-    phase('ui');
+    await phase('ui');
     this.app.renderer.render(this.app.stage); // first frame: uploads textures, compiles shaders
-    phase('first-frame');
+    await phase('first-frame');
 
     // dtcap lets automated tests run in (near) real time on slow software renderers
     const cap = parseFloat(this.params.get('dtcap') ?? '') || 1 / 20;
@@ -169,13 +184,11 @@ export class Game {
     if (ts !== 1) gsap.globalTimeline.timeScale(ts);
     this.app.ticker.add((tk) => this.update(Math.min(tk.deltaMS / 1000, cap) * ts));
 
-    const boot = document.getElementById('boot')!;
-    boot.classList.add('gone');
-    setTimeout(() => boot.remove(), 600);
+    void boot.reveal();
     // the damage-number font is only needed in a harvest: build it once the tree is up
     const idle = window.requestIdleCallback ?? ((cb: () => void) => setTimeout(cb, 200));
     idle(() => this.ensureDamageFont());
-    gsap.from(this.hud.root.querySelectorAll('.hud-tl, .hud-tr, .chip, .hud-bottom'), { y: -16, opacity: 0, stagger: 0.08, duration: 0.7, delay: 0.3, ease: 'power3.out' });
+    gsap.from(this.hud.root.querySelectorAll('.hud-tl, .hud-tr, .chip, .hud-bottom'), { y: -16, opacity: 0, stagger: 0.08, duration: 0.7, delay: 0.75, ease: 'power3.out' }); // as the loading screen's iris opens
   }
 
   // ───────────────────────────────────────────── ui wiring
