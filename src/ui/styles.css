@@ -340,10 +340,6 @@ input[type='range']:hover::-webkit-slider-thumb { background: #fff; }
 /* motion off: no comet, no sheen */
 body.still .rite::before, body.still .text-btn.primary::before { display: none; }
 body.still .shine, body.still .boot-seed { animation: none; }
-@media (prefers-reduced-motion: reduce) {
-  .rite::before, .text-btn.primary::before { display: none; }
-  .shine, .boot-seed { animation: none; }
-}
 
 @media (max-width: 680px) {
   .readout .lbl, .chip { display: none; }
