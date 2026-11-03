@@ -99,7 +99,7 @@ Synergy nodes sit on the diagonals and need both neighbouring branches. Keystone
 * Timer bar shifts from cyan to amber to red and pulses in the final seconds. At the end: slow-mo freeze, then a summary card with counting numbers.
 * Transitions: zoom into the seed + flash (tree → harvest), shards dissolve (harvest → tree).
 
-**Audio:** procedural Web Audio (no asset files). Chimes on a pentatonic scale, filtered-noise shatters, plinks that rise in pitch with combo.
+**Audio:** a four-piece orchestral/piano soundtrack by Scott Buckley (CC-BY 4.0) plus calm CC0 recordings in `public/sfx` (VCSL kalimba/vibraphone/marimba/chimes, BigSoundBank singing bowl and bubble pops), re-pitched onto a pentatonic scale. During a harvest only shattering shards make a sound; the music carries the rest.
 
 ---
 
@@ -113,7 +113,7 @@ Synergy nodes sit on the diagonals and need both neighbouring branches. Keystone
 | Animation | **GSAP 3.15** | Industry-standard timelines and eases (elastic, back, expo). Tweens any JS object, including Pixi display objects. 100% free incl. all plugins since April 2025. |
 | Post-FX | **pixi-filters 6.1** | `AdvancedBloomFilter` (global glow), `ShockwaveFilter` (keystone ripples), `GlowFilter`. |
 | UI overlay | **HTML/CSS** over the canvas | Crisp text, glassmorphism tooltips/panels, accessible buttons; animated by GSAP. |
-| Audio | **Web Audio API** | Procedural SFX: zero assets, zero licensing. |
+| Audio | **Web Audio API** | CC0 samples (~0.9 MB of MP3) pitched and mixed at runtime, plus an 18 MB streamed CC-BY soundtrack. |
 | Fonts | **@fontsource** (Chakra Petch + Inter) | Bundled locally, no external requests. |
 | Tests | **Vitest** | Pure logic (costs, unlock rules, stats, save) is unit-tested. |
 | Save | `localStorage` | Versioned JSON, autosave after every purchase/run. |
@@ -131,7 +131,7 @@ src/
   data/tree.ts            node definitions (pure data, polar coords)
   data/stats.ts           base stats + computeStats(levels)
   systems/tree-logic.ts   cost, visibility, canBuy, buy  (unit-tested)
-  systems/audio.ts        procedural SFX
+  systems/audio.ts        sample playback (public/sfx)
   render/                 textures, particles, background, shake, icons
   scenes/TreeScene.ts     + tree/NodeView, EdgeView, Camera
   scenes/HarvestScene.ts  + harvest/Shard, Lens, Satellites, Arcs

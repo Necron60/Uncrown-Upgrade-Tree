@@ -1,11 +1,19 @@
 export type Bloom = 'off' | 'soft' | 'full';
 export type Level3 = 'low' | 'medium' | 'high';
+export const MUSIC_TRACKS = ['all', 'adrift', 'hymn', 'cirrus', 'hope'] as const;
+export type MusicTrack = (typeof MUSIC_TRACKS)[number];
 
 export interface Settings {
   // sound
   volume: number; // master, 0..1
-  sfxVolume: number; // harvest sounds, 0..1
+  sfxVolume: number; // shattering in a harvest, 0..1
+  specialVolume: number; // chimes and gongs of special shards, 0..1
   uiVolume: number; // interface sounds, 0..1
+  musicVolume: number; // background music, 0..1
+  musicTrack: MusicTrack; // 'all' plays the pieces in turn
+  harvestMusic: 'full' | 'soft' | 'off'; // music level while harvesting
+  hoverSounds: boolean;
+  reverb: number; // 0..1
   muteHidden: boolean; // silence while the tab is in the background
   // motion & comfort
   reducedMotion: boolean; // master switch: overrides everything in this group
@@ -79,7 +87,8 @@ export function defaultSettings(): Settings {
   const reduced =
     typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   return {
-    volume: 0.7, sfxVolume: 1, uiVolume: 1, muteHidden: true,
+    volume: 0.7, sfxVolume: 1, specialVolume: 1, uiVolume: 1, musicVolume: 1, musicTrack: 'all', harvestMusic: 'full',
+    hoverSounds: true, reverb: 0.5, muteHidden: true,
     reducedMotion: !!reduced, shake: 1, cameraFx: true, ripples: true, flashes: 1, slowmo: true, ambient: true,
     ...GRAPHICS_PRESETS.high, darkness: 'deep', antialias: 'auto', fpsCap: 0, showFps: false,
     uiScale: 1, damageNumbers: true, hints: true, skipSummary: false,
@@ -99,7 +108,13 @@ export function normalizeSettings(raw: unknown): Settings {
   const out: Settings = {
     volume: num('volume', 0, 1),
     sfxVolume: num('sfxVolume', 0, 1),
+    specialVolume: num('specialVolume', 0, 1),
     uiVolume: num('uiVolume', 0, 1),
+    musicVolume: num('musicVolume', 0, 1),
+    musicTrack: pick('musicTrack', MUSIC_TRACKS),
+    harvestMusic: pick('harvestMusic', ['full', 'soft', 'off'] as const),
+    hoverSounds: bool('hoverSounds'),
+    reverb: num('reverb', 0, 1),
     muteHidden: bool('muteHidden'),
     reducedMotion: bool('reducedMotion'),
     // v0.1 stored shake as a boolean
