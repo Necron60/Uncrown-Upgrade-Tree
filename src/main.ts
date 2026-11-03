@@ -1,7 +1,10 @@
-import '@fontsource/chakra-petch/500.css';
-import '@fontsource/chakra-petch/600.css';
-import '@fontsource/chakra-petch/700.css';
-import '@fontsource-variable/inter';
+import '@fontsource/cormorant-garamond/500.css';
+import '@fontsource/cormorant-garamond/600.css';
+import '@fontsource/cormorant-garamond/500-italic.css';
+import '@fontsource/cormorant-garamond/600-italic.css';
+import '@fontsource/ibm-plex-mono/400.css';
+import '@fontsource/ibm-plex-mono/500.css';
+import '@fontsource/ibm-plex-mono/600.css';
 import './ui/styles.css';
 import { Game } from './game/Game';
 

@@ -394,7 +394,7 @@ export class TreeScene {
   }
 
   private floatText(x: number, y: number, text: string, color: number, size = 18) {
-    const t = new Text({ text, style: { fontFamily: 'Chakra Petch', fontWeight: '700', fontSize: size, fill: color, dropShadow: { color: 0x000000, alpha: 0.6, blur: 6, distance: 0 } } });
+    const t = new Text({ text, style: { fontFamily: 'IBM Plex Mono', fontWeight: '500', fontSize: size, fill: color, dropShadow: { color: 0x000000, alpha: 0.7, blur: 6, distance: 0 } } });
     t.anchor.set(0.5);
     t.resolution = 2;
     t.position.set(x, y);

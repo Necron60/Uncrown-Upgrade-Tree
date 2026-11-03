@@ -35,7 +35,7 @@ npm run typecheck
 - **GSAP** for every tween and timeline.
 - **pixi-filters**: bloom, plus shockwave ripples on keystones and the finale.
 - **Web Audio**: procedural sound with a pentatonic chime scale and a generated reverb.
-- **HTML/CSS** overlay for the HUD, tooltips and modals.
+- **HTML/CSS** overlay for the HUD, tooltips and modals: an engraved star-atlas look (hairline gold rules, Cormorant Garamond + IBM Plex Mono).
 
 ## Project layout
 

@@ -5,8 +5,8 @@ export type NodeKind = 'core' | 'minor' | 'major' | 'synergy' | 'keystone' | 'aw
 export type Currency = 'lumen' | 'prism';
 
 export type IconKey =
-  | 'seed' | 'blade' | 'aperture' | 'hourglass' | 'gem' | 'pulse' | 'crosshair' | 'orbit'
-  | 'bolt' | 'sprout' | 'cluster' | 'coin' | 'rhythm' | 'flare' | 'sun' | 'crack' | 'orbit2'
+  | 'seed' | 'blade' | 'aperture' | 'hourglass' | 'gem' | 'pulse' | 'crosshair' | 'comet'
+  | 'bolt' | 'sprout' | 'cluster' | 'coin' | 'rhythm' | 'flare' | 'sun' | 'crack' | 'comet2'
   | 'fork' | 'clock' | 'wave' | 'layers' | 'nova' | 'echo' | 'well' | 'eclipse' | 'prism'
   | 'spark' | 'spiral' | 'sunset' | 'shards' | 'star' | 'constellation' | 'moon' | 'crown'
   | 'heart' | 'abyss';
@@ -111,9 +111,9 @@ const defs: Def[] = [
     parents: ['force_1'], maxLevel: 5, costs: [L(32, 1.65)], mods: [{ stat: 'critChance', add: 0.06 }], icon: 'crosshair',
   },
   {
-    id: 'reach_2a', name: 'Orbiting Mote', branch: 'reach', kind: 'major', ring: 2, angle: -20,
-    desc: 'A mote of light circles your lens, cutting any shard it touches.',
-    parents: ['reach_1'], maxLevel: 3, costs: [L(45, 2.4)], mods: [{ stat: 'satellites', add: 1 }], icon: 'orbit',
+    id: 'reach_2a', name: 'Seeker Mote', branch: 'reach', kind: 'major', ring: 2, angle: -20,
+    desc: 'A mote of light breaks free and hunts shards across the field on its own.',
+    parents: ['reach_1'], maxLevel: 3, costs: [L(45, 2.4)], mods: [{ stat: 'satellites', add: 1 }], icon: 'comet',
   },
   {
     id: 'reach_2b', name: 'Arc Spark', branch: 'reach', kind: 'major', ring: 2, angle: 20,
@@ -158,10 +158,10 @@ const defs: Def[] = [
     parents: ['force_2a'], maxLevel: 3, costs: [L(380, 2.4)], mods: [{ stat: 'execute', add: 0.08 }], icon: 'crack',
   },
   {
-    id: 'reach_3a', name: 'Twin Orbit', branch: 'reach', kind: 'minor', ring: 3, angle: -24,
-    desc: 'Satellites move faster and strike harder.',
+    id: 'reach_3a', name: 'Swift Motes', branch: 'reach', kind: 'minor', ring: 3, angle: -24,
+    desc: 'Your motes fly faster and strike harder.',
     parents: ['reach_2a'], maxLevel: 3, costs: [L(320, 2.3)],
-    mods: [{ stat: 'satDamage', mul: 1.5 }, { stat: 'satSpeed', add: 0.3 }], icon: 'orbit2',
+    mods: [{ stat: 'satDamage', mul: 1.5 }, { stat: 'satSpeed', add: 0.3 }], icon: 'comet2',
   },
   {
     id: 'reach_3b', name: 'Prismatic Lens', branch: 'reach', kind: 'minor', ring: 3, angle: 0,
@@ -249,8 +249,8 @@ const defs: Def[] = [
 
   // ─── Synergies (diagonals, need both neighbours) ──────────────────────
   {
-    id: 'syn_fr', name: 'Charged Satellites', branch: 'force', branch2: 'reach', kind: 'synergy', ring: 4, angle: -45,
-    req: 'all', desc: 'Satellites can land critical hits and set off arcs.',
+    id: 'syn_fr', name: 'Charged Motes', branch: 'force', branch2: 'reach', kind: 'synergy', ring: 4, angle: -45,
+    req: 'all', desc: 'Motes can land critical hits and set off arcs.',
     parents: ['force_3a', 'reach_3a'], maxLevel: 1, costs: [L(9000)],
     mods: [{ stat: 'satCrit', add: 1 }, { stat: 'satArc', add: 1 }], icon: 'spark',
   },
@@ -279,7 +279,7 @@ const defs: Def[] = [
   },
   {
     id: 'reach_5', name: 'Constellation', branch: 'reach', kind: 'keystone', ring: 5, angle: 0,
-    desc: 'KEYSTONE. Two more satellites join the orbit, and lightning jumps twice as far.',
+    desc: 'KEYSTONE. Two more motes join the hunt, and lightning jumps twice as far.',
     parents: ['reach_4a', 'reach_4b'], maxLevel: 1, costs: [L(300000), P(50)],
     mods: [{ stat: 'satellites', add: 2 }, { stat: 'arcChains', add: 2 }], icon: 'constellation',
   },

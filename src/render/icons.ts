@@ -70,13 +70,24 @@ export function drawIcon(g: Graphics, key: IconKey, r: number, color: number, al
       }
       break;
     }
-    case 'orbit':
-    case 'orbit2': {
-      g.circle(0, 0, r * 0.28).fill(fill);
-      g.circle(0, 0, r * 0.72).stroke({ ...st, width: w * 0.75, alpha: alpha * 0.7 });
-      const a1 = -Math.PI / 4;
-      g.circle(Math.cos(a1) * r * 0.72, Math.sin(a1) * r * 0.72, r * 0.2).fill(fill);
-      if (key === 'orbit2') g.circle(Math.cos(a1 + Math.PI) * r * 0.72, Math.sin(a1 + Math.PI) * r * 0.72, r * 0.2).fill(fill);
+    case 'comet':
+    case 'comet2': {
+      // a bright head with a fanned tail of light streaming down-left
+      const comet = (hx: number, hy: number, sc: number, a: number) => {
+        const base = Math.PI * 0.75;
+        for (const [da, len, wa] of [[0, 1.3, 0.95], [-0.24, 0.9, 0.6], [0.24, 0.9, 0.6]]) {
+          const ang = base + da;
+          g.moveTo(hx + Math.cos(ang) * r * 0.22 * sc, hy + Math.sin(ang) * r * 0.22 * sc)
+            .lineTo(hx + Math.cos(ang) * r * len * sc, hy + Math.sin(ang) * r * len * sc)
+            .stroke({ ...st, width: w * wa, alpha: alpha * a * (da === 0 ? 0.9 : 0.55) });
+        }
+        g.circle(hx, hy, r * 0.25 * sc).fill({ color, alpha: alpha * a });
+      };
+      if (key === 'comet') comet(r * 0.35, -r * 0.35, 1, 1);
+      else {
+        comet(r * 0.45, -r * 0.5, 0.78, 1);
+        comet(-r * 0.05, r * 0.25, 0.62, 0.8);
+      }
       break;
     }
     case 'bolt': {

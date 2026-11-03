@@ -90,10 +90,10 @@ export class NodeView {
 
     this.q = new Text({
       text: '?',
-      style: { fontFamily: 'Chakra Petch', fontWeight: '700', fontSize: Math.round(this.r * 0.9), fill: 0x8a94c8 },
+      style: { fontFamily: 'Cormorant Garamond', fontStyle: 'italic', fontWeight: '600', fontSize: Math.round(this.r * 1.15), fill: 0xa99f88 },
     });
     this.q.anchor.set(0.5);
-    this.q.resolution = 2;
+    this.q.resolution = 3;
 
     this.c.visible = false;
     this.c.addChild(this.halo, this.pulseRing, this.inner);
