@@ -1,5 +1,5 @@
 import gsap from 'gsap';
-import { Container, Graphics, Sprite, Text } from 'pixi.js';
+import { AlphaFilter, Container, Graphics, Sprite, Text } from 'pixi.js';
 import { ShockwaveFilter } from 'pixi-filters/shockwave';
 import { TAU, pick, rand } from '../core/math';
 import { fmt } from '../core/format';
@@ -14,6 +14,36 @@ import type { Game } from '../game/Game';
 import { Camera } from './tree/Camera';
 import { EdgeView, type EdgeState } from './tree/EdgeView';
 import { NodeView } from './tree/NodeView';
+
+/** A comet of light racing along one or more branches. */
+interface Trace {
+  segs: { e: EdgeView; rev: boolean }[]; // rev = travel child → parent
+  i: number; // current segment
+  d: number; // distance along the current segment
+  v: number;
+  vmax: number;
+  accel: number;
+  size: number;
+  color: number;
+  grow: boolean; // draw the branch in behind the head
+  head: Sprite;
+  core: Sprite;
+  streak: Sprite;
+  onSeg?: (i: number, at: NodeView, e: EdgeView) => void;
+  onDone?: () => void;
+}
+
+interface TraceOpts {
+  color: number;
+  size?: number;
+  vmax?: number;
+  accel?: number;
+  grow?: boolean;
+  onSeg?: (i: number, at: NodeView, e: EdgeView) => void;
+  onDone?: () => void;
+}
+
+const DARKNESS = { off: 0, dim: 0.62, deep: 0.94 } as const;
 
 interface Pulse {
   edge: EdgeView;
@@ -31,8 +61,26 @@ export class TreeScene {
   private edgeLayer = new Container();
   private pulseLayer = new Container();
   private nodeLayer = new Container();
+  // lit parts of the tree are drawn above the darkness, so they glow out of the black
+  private litEdgeLayer = new Container();
+  private litNodeLayer = new Container();
   private fxLayer = new Container();
-  private fx = new Particles(2000);
+  private fx = new Particles(2400);
+  // darkness: a black layer the tree's light cuts holes into ('erase' sprites, one per node)
+  private darkLayer = new Container();
+  private darkRect = new Graphics();
+  private lightLayer = new Container();
+  private lightSprites = new Map<NodeView, Sprite>();
+  private dawn!: Sprite;
+  /** current / target opacity of the darkness */
+  darkAlpha: number = DARKNESS.deep;
+  private darkTarget: number = DARKNESS.deep;
+  private darkHold = false;
+  /** radius of the finale's dawn, which dissolves the darkness from the seed outward */
+  dawnR = 0;
+  private traceLayer = new Container();
+  private traces: Trace[] = [];
+  private popping = new Set<NodeView>();
   readonly nodes = new Map<string, NodeView>();
   private edges: EdgeView[] = [];
   private pulses: Pulse[] = [];
@@ -48,9 +96,14 @@ export class TreeScene {
 
   constructor(private game: Game) {
     this.view.addChild(this.world);
-    this.world.addChild(this.rings, this.edgeLayer, this.pulseLayer, this.nodeLayer, this.fxLayer);
+    // light (pulses, traces, bursts) is drawn *above* the darkness so it shines through it
+    this.world.addChild(this.rings, this.edgeLayer, this.nodeLayer, this.darkLayer, this.litEdgeLayer, this.pulseLayer, this.litNodeLayer, this.traceLayer, this.fxLayer);
     this.fxLayer.addChild(this.fx.view);
     this.drawRings();
+    this.darkRect.rect(-7000, -7000, 14000, 14000).fill({ color: 0x020107 });
+    this.darkLayer.addChild(this.darkRect, this.lightLayer);
+    // render the darkness as its own layer, so 'erase' cuts only the darkness and not the tree below
+    this.darkLayer.filters = [new AlphaFilter({ alpha: 1 })];
 
     for (const def of NODES) {
       if (def.kind === 'awaken') continue;
@@ -60,6 +113,21 @@ export class TreeScene {
     // core last so it draws on top
     const order = [...this.nodes.values()].sort((a, b) => b.def.ring - a.def.ring);
     for (const nv of order) this.nodeLayer.addChild(nv.c);
+    const tex = textures();
+    for (const nv of this.nodes.values()) {
+      const s = new Sprite(tex.pool);
+      s.anchor.set(0.5);
+      s.blendMode = 'erase';
+      s.position.set(nv.x, nv.y);
+      s.scale.set(0);
+      this.lightLayer.addChild(s);
+      this.lightSprites.set(nv, s);
+    }
+    this.dawn = new Sprite(tex.pool);
+    this.dawn.anchor.set(0.5);
+    this.dawn.blendMode = 'erase';
+    this.dawn.scale.set(0);
+    this.lightLayer.addChild(this.dawn);
 
     for (const def of NODES) {
       if (def.kind === 'awaken') continue;
@@ -100,7 +168,21 @@ export class TreeScene {
       nv.setState(st, level(s.levels, nv.def.id), aff, nv.def.kind === 'core' ? { awakenReady, awakened: s.awakened, keystones: ks } : undefined);
     }
     for (const e of this.edges) e.setState(this.edgeState(e));
+    this.placeLayers();
     this.updateBranchGlow();
+  }
+
+  /** Lit nodes and branches go above the darkness, everything still unlit below it. */
+  private placeLayers() {
+    for (const nv of this.nodes.values()) {
+      const lit = nv.def.kind === 'core' || ((nv.state === 'owned' || nv.state === 'maxed') && !nv.igniting);
+      const want = lit ? this.litNodeLayer : this.nodeLayer;
+      if (nv.c.parent !== want) want.addChild(nv.c);
+    }
+    for (const e of this.edges) {
+      const want = e.state === 'active' ? this.litEdgeLayer : this.edgeLayer;
+      if (e.view.parent !== want) want.addChild(e.view);
+    }
   }
 
   private edgeState(e: EdgeView): EdgeState {
@@ -133,6 +215,7 @@ export class TreeScene {
   enter(fromHarvest: boolean) {
     this.view.visible = true;
     this.sync();
+    if (!fromHarvest) this.snapLights();
     if (fromHarvest) {
       if (this.game.motion.cameraFx) {
         // arrive by zooming out of the seed
@@ -147,6 +230,39 @@ export class TreeScene {
   /** Particle amount (player setting). */
   setFxDensity(d: number) {
     this.fx.density = d;
+  }
+
+  /** How dark the void beyond the tree's light is (player setting). Once awakened, it is lit for good. */
+  setDarkness(level: keyof typeof DARKNESS) {
+    this.darkTarget = this.game.state.awakened ? 0 : DARKNESS[level];
+    if (!this.view.visible) this.darkAlpha = this.darkTarget;
+  }
+
+  /** Radius of light a node should cast in its current state. */
+  private lightTargetOf(nv: NodeView): number {
+    if (!nv.visible) return 0;
+    const st = nv.state;
+    let r = 0;
+    if (nv.def.kind === 'core') r = 300;
+    else if (st === 'owned' || st === 'maxed') {
+      r = nv.def.kind === 'keystone' ? 250 : nv.def.kind === 'minor' ? 140 : 170;
+      if (st === 'maxed') r *= 1.12;
+    } else if (st === 'available') r = nv.affordable ? 100 : 82; // an ember, enough to read the node
+    else if (st === 'locked') r = 58;
+    return (r + (nv.hover ? 45 : 0)) * nv.pop;
+  }
+
+  private lightStrength(nv: NodeView): number {
+    const st = nv.state;
+    if (nv.def.kind === 'core' || st === 'owned' || st === 'maxed') return 1;
+    if (st === 'available') return nv.affordable ? 0.78 : 0.6;
+    return 0.42;
+  }
+
+  /** Jump every light straight to its target (on load, no animation). */
+  private snapLights() {
+    for (const nv of this.nodes.values()) if (!nv.lightHold) nv.light = this.lightTargetOf(nv);
+    this.darkAlpha = this.darkTarget;
   }
 
   /** Hide the tree. The camera to come back to was stored by diveIn(). */
@@ -415,102 +531,251 @@ export class TreeScene {
     gsap.to(t, { alpha: 0, duration: 0.5, delay: 0.8, onComplete: () => t.destroy() });
   }
 
-  celebrate(nv: NodeView, res: Extract<BuyResult, { ok: true }>) {
-    const m = this.game.motion;
-    const reduced = this.game.state.settings.reducedMotion;
-    const big = nv.def.kind === 'keystone';
-    const major = nv.def.kind === 'major' || nv.def.kind === 'synergy';
+  // ───────────────────────────────────────────── light traces
+  private startTrace(segs: { e: EdgeView; rev: boolean }[], o: TraceOpts): Trace | null {
+    if (!segs.length) { o.onDone?.(); return null; }
     const tex = textures();
-    const { x, y, r, color } = nv;
+    const size = o.size ?? 1;
+    const mk = (t: typeof tex.glow, tint: number) => {
+      const sp = new Sprite(t);
+      sp.anchor.set(0.5);
+      sp.blendMode = 'add';
+      sp.tint = tint;
+      this.traceLayer.addChild(sp);
+      return sp;
+    };
+    const streak = mk(tex.spark, o.color);
+    streak.anchor.set(1, 0.5);
+    const head = mk(tex.glow, o.color);
+    head.scale.set(0.55 * size);
+    const core = mk(tex.dot, 0xffffff);
+    core.scale.set(0.42 * size);
+    const tr: Trace = {
+      segs, i: 0, d: 0, v: 260, vmax: o.vmax ?? 1400, accel: o.accel ?? 5200, size, color: o.color,
+      grow: o.grow ?? false, head, core, streak, onSeg: o.onSeg, onDone: o.onDone,
+    };
+    this.traces.push(tr);
+    return tr;
+  }
 
-    // squash → overshoot → settle
-    gsap.killTweensOf(nv, 'punch,flash');
-    gsap.timeline()
-      .to(nv, { punch: 0.8, duration: 0.07, ease: 'power2.in' })
-      .to(nv, { punch: big ? 1.45 : 1.25, duration: 0.16, ease: 'power2.out' })
-      .to(nv, { punch: 1, duration: 0.8, ease: 'elastic.out(1, 0.32)' });
-    nv.flash = (big ? 1.4 : 0.9) * Math.max(0.25, m.flashes);
-    gsap.to(nv, { flash: 0, duration: big ? 1.2 : 0.6, ease: 'power2.out' });
-
-    this.shockRing(x, y, r, r * (big ? 7 : 3.6), color, big ? 1.1 : 0.7);
-    if (!reduced) {
-      gsap.delayedCall(0.08, () => this.shockRing(x, y, r * 0.8, r * (big ? 5 : 2.6), 0xffffff, 0.6, 0.5));
-      this.fx.emit({ x, y, texture: tex.spark, count: big ? 90 : major ? 46 : 30, color: [color, 0xffffff], speed: [160, big ? 720 : 460], life: [0.35, 0.85], size: [0.35, 0.7], drag: 3.4, stretch: 0.0035, spread: r * 0.4 });
-      this.fx.emit({ x, y, texture: tex.star4, count: big ? 24 : 10, color: [color, 0xffffff], speed: [30, 200], life: [0.6, 1.3], size: [0.2, 0.5], spin: [-3, 3], drag: 2 });
-      this.fx.emit({ x, y, texture: tex.dot, count: big ? 40 : 16, color, speed: [20, 140], life: [0.8, 1.6], size: [0.15, 0.35], drag: 1.2, gravity: -30, spread: r });
+  /** Segments from a node back down its path to the seed. */
+  private pathSegs(id: string): { e: EdgeView; rev: boolean }[] {
+    const path = pathToSeed(id, this.game.state.levels);
+    const segs: { e: EdgeView; rev: boolean }[] = [];
+    for (let i = 0; i < path.length - 1; i++) {
+      const e = this.edges.find((x) => x.to.def.id === path[i] && x.from.def.id === path[i + 1]);
+      if (e) segs.push({ e, rev: true });
     }
+    return segs;
+  }
 
-    // cost readout + level
+  private updateTraces(dt: number) {
+    const tex = textures();
+    for (let k = this.traces.length - 1; k >= 0; k--) {
+      const tr = this.traces[k];
+      tr.v = Math.min(tr.vmax, tr.v + tr.accel * dt);
+      let step = tr.v * dt;
+      while (step > 0 && tr.i < tr.segs.length) {
+        const sg = tr.segs[tr.i];
+        const left = sg.e.length - tr.d;
+        if (step < left) {
+          tr.d += step;
+          step = 0;
+        } else {
+          step -= left;
+          if (tr.grow && !sg.rev) { sg.e.grow = 1; sg.e.redraw(); }
+          tr.onSeg?.(tr.i, sg.rev ? sg.e.from : sg.e.to, sg.e);
+          tr.i++;
+          tr.d = 0;
+        }
+      }
+      if (tr.i >= tr.segs.length) {
+        // arrival: a little flare where the light lands, then the comet fades out
+        const last = tr.segs[tr.segs.length - 1];
+        const end = last.rev ? last.e.from : last.e.to;
+        this.fx.emit({ x: end.x, y: end.y, texture: tex.star4, count: 1, color: 0xffffff, speed: [0, 0], life: [0.3, 0.3], size: [0.9 * tr.size, 0.9 * tr.size], sizeEnd: 0, spin: [2, 3] });
+        for (const sp of [tr.head, tr.core, tr.streak]) gsap.to(sp, { alpha: 0, duration: 0.18, onComplete: () => sp.destroy() });
+        this.traces.splice(k, 1);
+        tr.onDone?.();
+        continue;
+      }
+      const sg = tr.segs[tr.i];
+      const f = tr.d / sg.e.length;
+      const tt = sg.rev ? 1 - f : f;
+      const p = sg.e.pointAt(tt);
+      const q = sg.e.pointAt(sg.rev ? Math.min(1, tt + 0.03) : Math.max(0, tt - 0.03));
+      if (tr.grow && !sg.rev) { sg.e.grow = f; sg.e.redraw(); }
+      const ang = Math.atan2(p.y - q.y, p.x - q.x);
+      tr.head.position.set(p.x, p.y);
+      tr.core.position.set(p.x, p.y);
+      tr.streak.position.set(p.x, p.y);
+      tr.streak.rotation = ang;
+      tr.streak.scale.set((0.7 + tr.v * 0.0011) * tr.size, 0.5 * tr.size);
+      this.fx.emit({ x: p.x, y: p.y, texture: tex.spark, count: 1, color: [tr.color, 0xffffff], speed: [20, 90], angle: [ang + Math.PI - 0.5, ang + Math.PI + 0.5], life: [0.16, 0.32], size: [0.22 * tr.size, 0.38 * tr.size], drag: 4, stretch: 0.004 });
+      if (Math.random() < 0.55) this.fx.emit({ x: p.x, y: p.y, texture: tex.dot, count: 1, color: tr.color, speed: [4, 30], life: [0.35, 0.7], size: [0.14 * tr.size, 0.26 * tr.size], drag: 2, spread: 3 });
+    }
+  }
+
+  // ───────────────────────────────────────────── buying
+  celebrate(nv: NodeView, res: Extract<BuyResult, { ok: true }>) {
+    const reduced = this.game.state.settings.reducedMotion;
+    const first = res.newLevel === 1;
+    const levels = this.game.state.levels;
+    const revealed = res.revealed.map((id) => this.nodes.get(id)).filter((n): n is NodeView => !!n);
+
+    // newly revealed nodes stay hidden until the light reaches them
+    for (const c of revealed) {
+      c.pop = 0;
+      for (const e of this.edges) if (e.to === c) e.grow = 0;
+    }
+    // on a first purchase, the branch(es) from already-lit parents are drawn by the incoming light
+    const inbound = first && !reduced ? this.edges.filter((e) => e.to === nv && isOwned(levels, e.from.def.id)) : [];
+    for (const e of inbound) e.grow = 0;
+    this.sync();
+    this.showTooltip();
+
+    // instant tactile answer to the click
+    gsap.killTweensOf(nv, 'punch');
+    gsap.to(nv, { punch: 0.84, duration: 0.07, ease: 'power2.in' });
     const spent = res.spent;
     const parts: string[] = [];
     if (spent.lumen) parts.push(`-${fmt(spent.lumen)}`);
     if (spent.prism) parts.push(`-${fmt(spent.prism)}◆`);
-    if (parts.length) this.floatText(x, y - r - 18, parts.join('  '), 0xffd77a, 17);
-    if (nv.def.maxLevel > 1) this.floatText(x, y + r + 26, `LV ${res.newLevel}`, color, 14);
+    if (parts.length) this.floatText(nv.x, nv.y - nv.r - 18, parts.join('  '), 0xffd77a, 17);
 
+    if (inbound.length) {
+      // light races in from the lit tree; the node ignites when it lands
+      nv.lightHold = true;
+      nv.light = 0;
+      nv.igniting = true;
+      this.placeLayers();
+      audio.trace(0);
+      let arrived = false;
+      for (const e of inbound) {
+        this.startTrace([{ e, rev: false }], {
+          color: e.from.def.kind === 'core' ? nv.color : e.from.color, grow: true, size: 0.9,
+          onDone: () => { if (!arrived) { arrived = true; this.ignite(nv, res, revealed); } },
+        });
+      }
+    } else {
+      this.ignite(nv, res, revealed);
+    }
+  }
+
+  /** The moment light lands in a node: burst, bloom of light, then light flows on to its neighbours. */
+  private ignite(nv: NodeView, res: Extract<BuyResult, { ok: true }>, revealed: NodeView[]) {
+    const m = this.game.motion;
+    const reduced = this.game.state.settings.reducedMotion;
+    const big = nv.def.kind === 'keystone';
+    const major = nv.def.kind === 'major' || nv.def.kind === 'synergy';
+    const first = res.newLevel === 1;
+    const tex = textures();
+    const { x, y, r, color } = nv;
+
+    nv.igniting = false;
+    this.placeLayers();
+    gsap.killTweensOf(nv, 'punch,flash,light');
+    gsap.timeline()
+      .to(nv, { punch: big ? 1.5 : first ? 1.3 : 1.2, duration: 0.14, ease: 'power2.out' })
+      .to(nv, { punch: 1, duration: 0.8, ease: 'elastic.out(1, 0.32)' });
+    nv.flash = (big ? 1.5 : first ? 1.1 : 0.8) * Math.max(0.25, m.flashes);
+    gsap.to(nv, { flash: 0, duration: big ? 1.3 : 0.7, ease: 'power2.out' });
+
+    // the node's light blooms past its resting size, then settles
+    nv.lightHold = true;
+    const target = this.lightTargetOf(nv);
+    gsap.timeline({ onComplete: () => { nv.lightHold = false; } })
+      .to(nv, { light: target * (first ? 1.45 : 1.2), duration: first ? 0.55 : 0.35, ease: 'expo.out' })
+      .to(nv, { light: target, duration: 1.4, ease: 'power2.inOut' });
+
+    this.shockRing(x, y, r, r * (big ? 7 : first ? 4.2 : 3.2), color, big ? 1.1 : 0.75);
+    if (!reduced) {
+      gsap.delayedCall(0.07, () => this.shockRing(x, y, r * 0.8, r * (big ? 5 : 2.6), 0xffffff, 0.6, 0.5));
+      this.fx.emit({ x, y, texture: tex.spark, count: big ? 90 : major ? 48 : first ? 36 : 22, color: [color, 0xffffff], speed: [160, big ? 760 : 480], life: [0.35, 0.85], size: [0.35, 0.7], drag: 3.4, stretch: 0.0035, spread: r * 0.4 });
+      this.fx.emit({ x, y, texture: tex.star4, count: big ? 24 : first ? 12 : 6, color: [color, 0xffffff], speed: [30, 200], life: [0.6, 1.3], size: [0.2, 0.5], spin: [-3, 3], drag: 2 });
+      this.fx.emit({ x, y, texture: tex.dot, count: big ? 40 : 16, color, speed: [20, 140], life: [0.8, 1.6], size: [0.15, 0.35], drag: 1.2, gravity: -30, spread: r });
+    }
+    if (nv.def.maxLevel > 1) this.floatText(x, y + r + 26, `LV ${res.newLevel}`, color, 14);
     audio.purchase(Math.min(res.newLevel, 6) + (major ? 2 : 0), big);
 
     if (big) {
       this.game.shake.add(0.55);
-      this.keystoneBeam(nv);
       this.shockwave(x, y, 16, 1.1);
+      // the keystone's light runs home along the branches and lights a quarter of the seed
+      const core = this.nodes.get('seed')!;
+      gsap.delayedCall(0.25, () => {
+        audio.trace(5);
+        this.startTrace(this.pathSegs(nv.def.id), {
+          color, size: 1.5, vmax: 1300, accel: 2600,
+          onSeg: (_i, at) => { if (at !== core) gsap.fromTo(at, { flash: 0.7 }, { flash: 0, duration: 0.7 }); },
+          onDone: () => {
+            gsap.fromTo(core, { flash: 1.3 * Math.max(0.25, m.flashes) }, { flash: 0, duration: 1.2 });
+            gsap.fromTo(core, { punch: 1.3 }, { punch: 1, duration: 1, ease: 'elastic.out(1, 0.3)' });
+            this.shockRing(core.x, core.y, core.r, core.r * 4.5, color, 1.1);
+            this.game.shake.add(0.3);
+            audio.reveal(6);
+          },
+        });
+      });
     } else if (major) {
       this.game.shake.add(0.18);
     }
-
-    // newly revealed neighbours grow out along their branch
-    res.revealed.forEach((id, i) => this.reveal(id, 0.22 + i * 0.1, i));
-    this.sync();
-    this.showTooltip();
-  }
-
-  private reveal(id: string, delay: number, i: number) {
-    const nv = this.nodes.get(id);
-    if (!nv) return;
-    const st = nodeState(nv.def, this.game.state.levels);
-    nv.pop = 0;
-    const inbound = this.edges.filter((e) => e.to === nv);
-    for (const e of inbound) {
-      e.grow = 0;
-      e.redraw();
-      gsap.to(e, {
-        grow: 1, duration: 0.5, delay, ease: 'power2.inOut',
-        onUpdate: () => {
-          e.redraw();
-          if (st !== 'silhouette' && Math.random() < 0.6) {
-            const p = e.pointAt(e.grow);
-            this.fx.emit({ x: p.x, y: p.y, texture: textures().dot, count: 1, color: nv.color, speed: [5, 30], life: [0.3, 0.6], size: [0.25, 0.4] });
-          }
-        },
-      });
+    if (!first && !big && !reduced) {
+      // a level-up sends a pulse of light home to the seed
+      gsap.delayedCall(0.12, () => this.startTrace(this.pathSegs(nv.def.id), {
+        color, size: 0.55, vmax: 1900, accel: 7000,
+        onDone: () => { const core = this.nodes.get('seed')!; gsap.fromTo(core, { flash: 0.35 * m.flashes }, { flash: 0, duration: 0.5 }); },
+      }));
     }
-    gsap.to(nv, {
-      pop: 1, duration: st === 'silhouette' ? 0.6 : 0.7, delay: delay + 0.42, ease: st === 'silhouette' ? 'power2.out' : 'back.out(2.4)',
-      onStart: () => {
-        if (st === 'silhouette') return;
-        audio.reveal(i);
-        this.shockRing(nv.x, nv.y, nv.r * 0.5, nv.r * 2.6, nv.color, 0.6, 0.7);
-        this.fx.emit({ x: nv.x, y: nv.y, texture: textures().star4, count: 8, color: [nv.color, 0xffffff], speed: [30, 140], life: [0.5, 1], size: [0.2, 0.4], spin: [-2, 2] });
-      },
-    });
+
+    this.revealFrom(nv, revealed);
   }
 
-  private keystoneBeam(nv: NodeView) {
-    const core = this.nodes.get('seed')!;
-    const beam = new Graphics();
-    beam.blendMode = 'add';
-    beam.moveTo(nv.x, nv.y).lineTo(core.x, core.y).stroke({ width: 26, color: nv.color, alpha: 0.25 });
-    beam.moveTo(nv.x, nv.y).lineTo(core.x, core.y).stroke({ width: 5, color: 0xffffff, alpha: 0.85 });
-    this.fxLayer.addChild(beam);
-    beam.alpha = 0;
-    gsap.timeline()
-      .to(beam, { alpha: 1, duration: 0.15, delay: 0.25 })
-      .to(beam, { alpha: 0, duration: 1.1, ease: 'power2.in', onComplete: () => beam.destroy() });
-    gsap.delayedCall(0.4, () => {
-      gsap.fromTo(core, { flash: 1.2 }, { flash: 0, duration: 1.2 });
-      gsap.fromTo(core, { punch: 1.25 }, { punch: 1, duration: 1, ease: 'elastic.out(1, 0.3)' });
-      this.shockRing(core.x, core.y, core.r, core.r * 4, nv.color, 1);
+  /** Light flows on from `src` to each newly revealed neighbour; each one appears as its light arrives. */
+  private revealFrom(src: NodeView, revealed: NodeView[]) {
+    if (!revealed.length) return;
+    const reduced = this.game.state.settings.reducedMotion;
+    const direct = revealed.filter((c) => this.edges.some((e) => e.from === src && e.to === c));
+    const rest = revealed.filter((c) => !direct.includes(c));
+    if (reduced) {
+      revealed.forEach((c, i) => gsap.delayedCall(0.1 + i * 0.05, () => this.popNode(c, i, [])));
+      return;
+    }
+    if (direct.length) audio.trace(2);
+    direct.forEach((c, i) => {
+      const e = this.edges.find((x) => x.from === src && x.to === c)!;
+      gsap.delayedCall(0.08 + i * 0.07, () => this.startTrace([{ e, rev: false }], {
+        color: c.color, grow: true, size: c.state === 'silhouette' ? 0.45 : 0.75, vmax: 1100, accel: 3400,
+        onDone: () => this.popNode(c, i, rest),
+      }));
     });
+    // anything not reachable from a direct reveal just fades in
+    for (const c of rest) {
+      if (!c.def.parents.some((p) => direct.some((d) => d.def.id === p))) gsap.delayedCall(0.7, () => this.popNode(c, 0, []));
+    }
+  }
+
+  private popNode(c: NodeView, i: number, rest: NodeView[]) {
+    if (this.popping.has(c) || c.pop >= 1) return;
+    this.popping.add(c);
+    const sil = c.state === 'silhouette';
+    for (const e of this.edges) {
+      if (e.to === c && e.grow < 1) gsap.to(e, { grow: 1, duration: 0.45, ease: 'power2.out', onUpdate: () => e.redraw() });
+    }
+    gsap.to(c, {
+      pop: 1, duration: sil ? 0.6 : 0.7, ease: sil ? 'power2.out' : 'back.out(2.4)',
+      onComplete: () => this.popping.delete(c),
+    });
+    if (!sil) {
+      audio.reveal(i);
+      this.shockRing(c.x, c.y, c.r * 0.5, c.r * 2.6, c.color, 0.6, 0.7);
+      this.fx.emit({ x: c.x, y: c.y, texture: textures().star4, count: 8, color: [c.color, 0xffffff], speed: [30, 140], life: [0.5, 1], size: [0.2, 0.4], spin: [-2, 2] });
+    }
+    // the faint "?" stars beyond it follow along dotted branches
+    for (const s of rest) {
+      if (!s.def.parents.includes(c.def.id) || this.popping.has(s) || s.pop >= 1) continue;
+      gsap.delayedCall(0.15, () => this.popNode(s, 0, []));
+    }
   }
 
   /** Screen-space displacement ripple (keystones, finale). */
@@ -534,42 +799,124 @@ export class TreeScene {
   async awakenSequence(): Promise<void> {
     this.inputEnabled = false;
     this.setHovered(null);
+    const m = this.game.motion;
+    const reduced = this.game.state.settings.reducedMotion;
+    const tex = textures();
+    const wait = (s: number) => new Promise<void>((r) => gsap.delayedCall(s, r));
+    const core = this.nodes.get('seed')!;
+    const lit = [...this.nodes.values()].filter((n) => n.visible);
+    const fs = Math.max(0.25, m.flashes);
+
+    // 1 ─ the lights go out: everything you grew sinks to embers in a near-black void
+    this.darkHold = true;
+    gsap.to(this, { darkAlpha: 0.97, duration: 1.6, ease: 'power2.inOut' });
+    for (const n of lit) {
+      n.lightHold = true;
+      gsap.to(n, { light: n === core ? 140 : 34, duration: 1.6, ease: 'power2.inOut' });
+      if (n !== core) gsap.to(n, { dim: 1, duration: 1.6, ease: 'power2.inOut' });
+    }
+    for (const e of this.edges) gsap.to(e, { dim: 1, duration: 1.6, ease: 'power2.inOut' });
+    gsap.to(this.pulseLayer, { alpha: 0, duration: 1.2 });
+    audio.drone();
     const fit = this.fitZoom();
-    if (this.game.motion.cameraFx) {
+    if (m.cameraFx) {
       this.cam.locked = true;
-      await new Promise<void>((res) => gsap.to(this.cam, { x: 0, y: 0, zoom: fit, duration: 1.6, ease: 'power3.inOut', onComplete: res }));
+      gsap.to(this.cam, { x: 0, y: 0, zoom: fit, duration: 1.8, ease: 'power3.inOut' });
     } else {
       this.cam.set(0, 0, fit, true);
       this.cam.locked = true;
     }
-    const tex = textures();
-    // wave of light from the rim inward
-    const byRing = [...this.nodes.values()].filter((n) => n.def.kind !== 'core').sort((a, b) => b.def.ring - a.def.ring);
-    byRing.forEach((nv) => {
-      const d = (5 - nv.def.ring) * 0.28 + Math.random() * 0.1;
-      gsap.delayedCall(d, () => {
-        gsap.fromTo(nv, { flash: 1 }, { flash: 0, duration: 0.9 });
-        gsap.fromTo(nv, { punch: 1.3 }, { punch: 1, duration: 0.8, ease: 'elastic.out(1, 0.35)' });
-        this.fx.emit({ x: nv.x, y: nv.y, texture: tex.star4, count: 5, color: [nv.color, 0xffffff], speed: [30, 120], life: [0.5, 1], size: [0.25, 0.5] });
-        audio.reveal(nv.def.ring);
-      });
-    });
-    for (const e of this.edges) if (e.state === 'active') for (let k = 0; k < 3; k++) this.spawnPulse(e, 1 - k * 0.3, 700);
-    await new Promise<void>((r) => gsap.delayedCall(1.7, r));
-    const core = this.nodes.get('seed')!;
+    await wait(1.9);
+
+    // 2 ─ four lights race home from the keystones, re-lighting every node they pass
+    const relight = (n: NodeView, i: number) => {
+      gsap.to(n, { dim: 0, duration: 0.35, ease: 'power2.out' });
+      gsap.fromTo(n, { flash: 0.9 * fs }, { flash: 0, duration: 0.8 });
+      gsap.fromTo(n, { punch: 1.25 }, { punch: 1, duration: 0.7, ease: 'elastic.out(1, 0.35)' });
+      gsap.to(n, { light: this.lightTargetOf(n) * 0.75, duration: 0.6, ease: 'expo.out' });
+      this.fx.emit({ x: n.x, y: n.y, texture: tex.star4, count: 5, color: [n.color, 0xffffff], speed: [30, 130], life: [0.5, 1], size: [0.25, 0.5], spin: [-2, 2] });
+      audio.reveal(i);
+    };
+    if (reduced) {
+      for (const n of lit) gsap.to(n, { light: this.lightTargetOf(n) * 0.6, dim: 0, duration: 0.8 });
+      for (const e of this.edges) gsap.to(e, { dim: 0, duration: 0.8 });
+      await wait(0.9);
+    } else {
+      await Promise.all(KEYSTONES.map((k, j) => new Promise<void>((res) => {
+        const ks = this.nodes.get(k)!;
+        gsap.delayedCall(j * 0.12, () => {
+          relight(ks, j);
+          this.shockRing(ks.x, ks.y, ks.r, ks.r * 3.5, ks.color, 0.8);
+          audio.trace(j);
+          this.startTrace(this.pathSegs(k), {
+            color: ks.color, size: 1.6, vmax: 620, accel: 700,
+            onSeg: (i, at, e) => {
+              gsap.to(e, { dim: 0, duration: 0.3 }); // the branch it just ran along stays lit
+              if (at !== core) relight(at, i + j);
+            },
+            onDone: res,
+          });
+        });
+      })));
+    }
+
+    // 3 ─ the seed gathers the light: it swells while sparks spiral in from the dark
     audio.awaken();
-    gsap.to(core, { punch: 2.3, duration: 1.4, ease: 'power2.in' });
-    gsap.to(core, { flash: 3 * Math.max(0.25, this.game.motion.flashes), duration: 1.4, ease: 'power2.in' });
-    await new Promise<void>((r) => gsap.delayedCall(1.4, r));
-    this.game.flash(1, 0.15, 1.6);
+    gsap.to(core, { punch: 1.9, duration: 1.4, ease: 'power2.in' });
+    gsap.to(core, { flash: 2.2 * fs, duration: 1.4, ease: 'power2.in' });
+    gsap.to(core, { light: 300, duration: 1.4, ease: 'power2.in' });
+    if (!reduced) {
+      for (let k = 0; k < 12; k++) {
+        gsap.delayedCall(k * 0.1, () => {
+          for (let i = 0; i < 14; i++) {
+            const a = (i / 14) * TAU + k * 0.4;
+            const R = rand(520, 760);
+            const life = 1.3 - k * 0.1; // every wave converges on the seed just as it bursts
+            this.fx.emit({
+              x: Math.cos(a) * R, y: Math.sin(a) * R, texture: tex.spark, count: 1,
+              color: [0xffe6a8, 0xffffff, pick([BRANCH_COLORS.force, BRANCH_COLORS.reach, BRANCH_COLORS.flow, BRANCH_COLORS.fortune])],
+              angle: [a + Math.PI + 0.28, a + Math.PI + 0.32], speed: [R / life, R / life], life: [life, life],
+              size: [0.35, 0.5], sizeEnd: 0.6, drag: 0, stretch: 0.0018, alpha: 0.9,
+            });
+          }
+        });
+      }
+    }
+    await wait(1.4);
+
+    // 4 ─ dawn: the seed bursts and its light dissolves the darkness for good
+    this.game.flash(1, 0.12, 1.8);
     this.game.shake.add(0.9);
     this.shockwave(0, 0, 40, 1.8);
     this.fx.emit({ x: 0, y: 0, texture: tex.spark, count: 260, color: [0xffffff, 0xffe0a0, BRANCH_COLORS.force, BRANCH_COLORS.reach, BRANCH_COLORS.flow, BRANCH_COLORS.fortune], speed: [300, 1500], life: [0.6, 1.8], size: [0.4, 0.9], drag: 1.6, stretch: 0.0025 });
     this.fx.emit({ x: 0, y: 0, texture: tex.star4, count: 80, color: [0xffffff, 0xffe0a0], speed: [60, 600], life: [1, 2.4], size: [0.3, 0.7], spin: [-3, 3], drag: 1.2 });
     for (let i = 0; i < 4; i++) gsap.delayedCall(i * 0.15, () => this.shockRing(0, 0, 60, 900 + i * 300, pick([0xffffff, 0xffe0a0, 0xfff6dd]), 1.6, 0.8));
+    gsap.fromTo(this, { dawnR: 0 }, { dawnR: 4600, duration: 2.8, ease: 'power2.out' });
+    gsap.to(this, { darkAlpha: 0, duration: 2.4, delay: 1.2, ease: 'power2.inOut' });
+    // nodes flare as the dawn passes over them
+    for (const n of lit) {
+      if (n === core) continue;
+      const d = Math.hypot(n.x, n.y);
+      const delay = 2.8 * (1 - Math.sqrt(1 - Math.min(1, d / 4600))); // inverse of power2.out
+      gsap.delayedCall(delay, () => {
+        gsap.to(n, { dim: 0, duration: 0.4 });
+        for (const e of this.edges) if (e.to === n && e.dim > 0) gsap.to(e, { dim: 0, duration: 0.5 });
+        gsap.fromTo(n, { flash: 1 * fs }, { flash: 0, duration: 0.9 });
+        gsap.fromTo(n, { punch: 1.3 }, { punch: 1, duration: 0.8, ease: 'elastic.out(1, 0.35)' });
+        gsap.to(n, { light: this.lightTargetOf(n) * 1.2, duration: 0.8, ease: 'expo.out' });
+      });
+    }
+    for (const e of this.edges) if (e.state === 'active') for (let k = 0; k < 3; k++) this.spawnPulse(e, 1 - k * 0.3, 700);
     gsap.to(core, { punch: 1, flash: 0, duration: 2.2, ease: 'elastic.out(1, 0.4)' });
+    gsap.to(this.pulseLayer, { alpha: 1, duration: 1 });
     this.sync();
-    await new Promise<void>((r) => gsap.delayedCall(1.2, r));
+    await wait(2.6);
+
+    // the void stays lit from now on
+    for (const n of lit) { n.lightHold = false; n.dim = 0; }
+    for (const e of this.edges) e.dim = 0;
+    this.darkHold = false;
+    this.darkTarget = 0;
     this.cam.locked = false;
     this.cam.set(this.cam.x, this.cam.y, this.cam.zoom, true);
   }
@@ -615,6 +962,24 @@ export class TreeScene {
     }
 
     for (const nv of this.nodes.values()) nv.tick(dt, t);
+
+    // darkness and the light each node casts into it
+    if (!this.darkHold) this.darkAlpha += (this.darkTarget - this.darkAlpha) * Math.min(1, dt * 3);
+    this.darkLayer.visible = this.darkAlpha > 0.005;
+    if (this.darkLayer.visible) {
+      this.darkRect.alpha = this.darkAlpha;
+      const amb = this.game.motion.ambient;
+      for (const [nv, sp] of this.lightSprites) {
+        if (!nv.lightHold) nv.light += (this.lightTargetOf(nv) - nv.light) * Math.min(1, dt * 4);
+        const flicker = amb ? 1 + Math.sin(t * 1.3 + nv.x * 0.01) * 0.035 : 1;
+        sp.scale.set(((nv.light * 2) / 256) * flicker);
+        sp.alpha = this.lightStrength(nv);
+        sp.visible = nv.light > 1;
+      }
+      this.dawn.scale.set((this.dawnR * 2) / 256);
+      this.dawn.visible = this.dawnR > 1;
+    }
+    this.updateTraces(dt);
     for (const e of this.edges) {
       e.tick(dt);
       if (e.state === 'active' && e.grow >= 1 && this.game.motion.ambient) {

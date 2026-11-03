@@ -55,6 +55,14 @@ export class NodeView {
   level = 0;
   affordable = false;
   hover = false;
+  /** radius of the light pool this node casts into the darkness (world units) */
+  light = 0;
+  /** while true, the scene's per-frame easing leaves `light` alone (a tween owns it) */
+  lightHold = false;
+  /** bought, but its light hasn't arrived yet: keep it in the dark */
+  igniting = false;
+  /** 0..1: sinks the node toward an ember (finale) */
+  dim = 0;
   /** animated by GSAP */
   punch = 1;
   pop = 1;
@@ -291,7 +299,7 @@ export class NodeView {
     }
     const s = this.stateScale * this.hoverS * this.punch * breathe * (0.2 + 0.8 * this.pop);
     this.inner.scale.set(s);
-    this.c.alpha = Math.min(1, this.pop * 1.4);
+    this.c.alpha = Math.min(1, this.pop * 1.4) * (1 - this.dim * 0.8);
     this.halo.alpha = Math.min(1, Math.max(0, (this.haloBase + haloPulse + (this.hover ? 0.15 : 0)) * this.pop + this.flash));
     this.halo.scale.set(((this.r * (this.def.kind === 'core' ? 5 : 3.8)) / 128) * (1 + this.flash * 0.6) * (this.awakened ? 1.2 : 1));
 

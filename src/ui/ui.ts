@@ -531,6 +531,7 @@ export class SettingsPanel {
           row('Resolution', choice('resolution', [['0.5', '50%'], ['0.75', '75%'], ['1', '100%']], String(s.resolution)), 'Share of your screen\'s sharpness to render at. Lower runs faster.'),
           row('Particles', choice('particles', [['low', 'few'], ['medium', 'some'], ['high', 'many']], s.particles)),
           row('Background', choice('background', [['low', 'simple'], ['high', 'rich']], s.background), 'Simple drops the nebulae, faint stars and shooting stars.'),
+          row('Darkness', choice('darkness', [['off', 'off'], ['dim', 'dim'], ['deep', 'deep']], s.darkness), 'How dark the void is beyond the light of your tree.'),
           row('Frame rate', choice('fpsCap', [['30', '30'], ['60', '60'], ['120', '120'], ['0', 'max']], String(s.fpsCap))),
           row('Frame counter', toggle('showFps', s.showFps)),
         ].join('');
@@ -599,6 +600,7 @@ export class SettingsPanel {
       case 'bloom': s.bloom = v as Settings['bloom']; break;
       case 'particles': s.particles = v as Settings['particles']; break;
       case 'background': s.background = v as Settings['background']; break;
+      case 'darkness': s.darkness = v as Settings['darkness']; break;
       case 'resolution': case 'fpsCap': case 'uiScale':
       case 'volume': case 'sfxVolume': case 'uiVolume': case 'shake': case 'flashes':
         s[k] = Number(v); break;

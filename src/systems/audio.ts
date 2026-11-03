@@ -173,6 +173,25 @@ class Audio {
     });
   }
 
+  /** A streak of light racing along a branch: a quick upward glissando with a shimmer. */
+  trace(step = 0) {
+    if (!this.gate('trace', 0.04)) return;
+    this.on('ui', () => {
+      const f = noteHz(4 + step, 392);
+      this.tone(f, { dur: 0.32, gain: 0.05, slide: 2.2, verb: 0.6 });
+      this.noise({ dur: 0.28, gain: 0.03, type: 'highpass', freq: 6000, verb: 0.4 });
+    });
+  }
+
+  /** The low swell under the finale, before the seed awakens. */
+  drone() {
+    this.on('ui', () => {
+      this.tone(55, { type: 'triangle', dur: 5.5, gain: 0.16, attack: 1.4 });
+      this.tone(82.4, { type: 'triangle', dur: 5.5, gain: 0.08, attack: 1.8 });
+      this.tone(110, { dur: 5, gain: 0.05, attack: 2.2, verb: 1 });
+    });
+  }
+
   reveal(i: number) {
     if (!this.gate('reveal' + (i % 4), 0.02)) return;
     this.on('ui', () => {

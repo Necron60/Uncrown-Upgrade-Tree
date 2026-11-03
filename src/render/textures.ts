@@ -7,6 +7,7 @@ import { TAU } from '../core/math';
  */
 export interface TextureBank {
   glow: Texture;      // soft radial falloff
+  pool: Texture;      // broad, flat-topped light pool (used to cut holes in the darkness)
   dot: Texture;       // small hard-core dot
   spark: Texture;     // horizontal streak
   frag: Texture;      // crystal fragment (triangle)
@@ -213,6 +214,7 @@ export function textures(): TextureBank {
   }
   bank = {
     glow: radial(128, [[0, 1], [0.15, 0.75], [0.4, 0.25], [0.7, 0.06], [1, 0]]),
+    pool: radial(256, [[0, 1], [0.3, 0.96], [0.55, 0.72], [0.75, 0.34], [0.9, 0.09], [1, 0]]),
     dot: radial(32, [[0, 1], [0.35, 0.9], [0.6, 0.3], [1, 0]]),
     spark: makeSpark(),
     frag: makeFrag(),

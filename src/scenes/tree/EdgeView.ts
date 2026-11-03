@@ -26,6 +26,8 @@ export class EdgeView {
   highlight = 0;
   private hlTarget = 0;
   pulseTimer = Math.random() * 2;
+  /** 0..1: sinks the branch toward darkness (finale) */
+  dim = 0;
 
   constructor(readonly from: NodeView, readonly to: NodeView) {
     this.glow.blendMode = 'add';
@@ -75,6 +77,7 @@ export class EdgeView {
   tick(dt: number) {
     this.highlight += (this.hlTarget - this.highlight) * Math.min(1, dt * 12);
     this.hl.alpha = this.highlight;
+    this.view.alpha = 1 - this.dim * 0.85;
   }
 
   /** Draw the visible prefix [0, grow] of the curve, in colour chunks for a parent→child gradient. */
@@ -101,6 +104,12 @@ export class EdgeView {
     }
 
     const active = this.state === 'active';
+    if (active && this.grow < 1) {
+      // light is still racing along: keep the dim branch underneath the bright stroke
+      line.moveTo(this.pts[0].x, this.pts[0].y);
+      for (let i = 1; i < this.pts.length; i++) line.lineTo(this.pts[i].x, this.pts[i].y);
+      line.stroke({ width: 2, color: cB, alpha: 0.32, cap: 'round', join: 'round' });
+    }
     const chunks = 4;
     const per = SAMPLES / chunks;
     for (let c = 0; c < chunks; c++) {

@@ -144,7 +144,10 @@ export class Game {
     // dtcap lets automated tests run in (near) real time on slow software renderers
     const cap = parseFloat(this.params.get('dtcap') ?? '') || 1 / 20;
     if (this.params.has('dtcap')) gsap.ticker.lagSmoothing(0); // tests: UI tweens follow real time too
-    this.app.ticker.add((tk) => this.update(Math.min(tk.deltaMS / 1000, cap)));
+    // timescale slows everything down so tests can photograph fast animations mid-flight
+    const ts = parseFloat(this.params.get('timescale') ?? '') || 1;
+    if (ts !== 1) gsap.globalTimeline.timeScale(ts);
+    this.app.ticker.add((tk) => this.update(Math.min(tk.deltaMS / 1000, cap) * ts));
 
     const boot = document.getElementById('boot')!;
     boot.classList.add('gone');
@@ -208,6 +211,7 @@ export class Game {
     }
     this.tree.setFxDensity(this.particleDensity);
     this.bg.setDetail(s.background);
+    this.tree.setDarkness(s.darkness);
     this.app.ticker.maxFPS = s.fpsCap;
     this.fpsEl.style.display = s.showFps ? '' : 'none';
 

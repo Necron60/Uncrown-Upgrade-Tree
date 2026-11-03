@@ -20,6 +20,7 @@ export interface Settings {
   resolution: number; // 0.5..1 of the screen's pixel density
   particles: Level3;
   background: 'low' | 'high';
+  darkness: 'off' | 'dim' | 'deep'; // how dark the void is beyond the light of the tree
   fpsCap: number; // 0 = match the display
   showFps: boolean;
   // interface
@@ -79,7 +80,7 @@ export function defaultSettings(): Settings {
   return {
     volume: 0.7, sfxVolume: 1, uiVolume: 1, muteHidden: true,
     reducedMotion: !!reduced, shake: 1, cameraFx: true, ripples: true, flashes: 1, slowmo: true, ambient: true,
-    ...GRAPHICS_PRESETS.high, fpsCap: 0, showFps: false,
+    ...GRAPHICS_PRESETS.high, darkness: 'deep', fpsCap: 0, showFps: false,
     uiScale: 1, damageNumbers: true, hints: true, skipSummary: false,
   };
 }
@@ -111,6 +112,7 @@ export function normalizeSettings(raw: unknown): Settings {
     resolution: num('resolution', 0.5, 1),
     particles: pick('particles', ['low', 'medium', 'high'] as const),
     background: pick('background', ['low', 'high'] as const),
+    darkness: pick('darkness', ['off', 'dim', 'deep'] as const),
     fpsCap: [0, 30, 60, 120].includes(r.fpsCap as number) ? (r.fpsCap as number) : d.fpsCap,
     showFps: bool('showFps'),
     uiScale: num('uiScale', 0.85, 1.3),
