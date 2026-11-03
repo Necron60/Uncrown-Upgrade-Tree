@@ -25,7 +25,9 @@ export interface GameState {
   awakened: boolean;
 }
 
-export const SAVE_KEY = 'lumen-bloom-save-v1';
+export const SAVE_KEY = 'uncrown-save-v1';
+/** Saves from before the game was renamed; read once, then re-saved under SAVE_KEY. */
+const LEGACY_SAVE_KEYS = ['lumen-bloom-save-v1'];
 
 export function defaultSettings(): Settings {
   const reduced =
@@ -74,7 +76,9 @@ export function parseSave(raw: string | null): GameState {
 
 export function loadGame(): GameState {
   try {
-    return parseSave(localStorage.getItem(SAVE_KEY));
+    let raw = localStorage.getItem(SAVE_KEY);
+    for (const k of LEGACY_SAVE_KEYS) raw ??= localStorage.getItem(k);
+    return parseSave(raw);
   } catch {
     return newGame();
   }
@@ -91,6 +95,7 @@ export function saveGame(state: GameState): void {
 export function wipeSave(): void {
   try {
     localStorage.removeItem(SAVE_KEY);
+    for (const k of LEGACY_SAVE_KEYS) localStorage.removeItem(k);
   } catch {
     /* ignore */
   }

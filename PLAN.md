@@ -1,4 +1,4 @@
-# Lumen Bloom: Plan
+# Uncrown: Plan
 
 A browser game built around an upgrade tree. You are a seed of light in the void. Each **Harvest** is a short run where your lens shatters drifting crystal shards for *Lumen*. Between runs you spend Lumen in the **Bloom**, a radial constellation tree that grows outward from the seed. The tree is the centrepiece, and the focus is on animation, light and game feel.
 
