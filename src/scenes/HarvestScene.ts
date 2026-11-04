@@ -100,11 +100,16 @@ interface HitOpts {
   lightning?: boolean;
   /** damage over time: goes past wards, does not chill or count as a hit */
   dot?: boolean;
+  /** a fixed share (the Hollow Heart's cracks): no multipliers, no crits */
+  pure?: boolean;
 }
 
 const ARC_RANGE = 240;
 
 const NOVA_RANGE = 100;
+
+/** where the Hollow Heart rises and drifts about: below the banners, so they stay readable */
+const BOSS_Y = 0.56;
 
 export class HarvestScene {
   readonly view = new Container();
@@ -324,9 +329,10 @@ export class HarvestScene {
     if (type === 'boss') {
       this.boss = s;
       // it still bears the wounds of earlier harvests
-      const w = this.opts.bossWounds ?? 0;
+      const w = Math.min(0.999, this.opts.bossWounds ?? 0);
       s.hp = s.maxHp * (1 - w);
-      this.game.hhud.showBanner('The Hollow Heart', w > 0.005 ? `it still bears your wounds · ${Math.round(w * 100)}%` : 'break hazards to crack it, then shatter it', 'rgba(255,60,99,0.9)');
+      s.scar = w;
+      this.game.hhud.showBanner('The Hollow Heart', w > 0.005 ? `it still bears your wounds · ${Math.round(w * 100)}% broken` : 'break hazards to crack it, then shatter it', 'rgba(255,60,99,0.9)');
       this.shake.add(0.5);
       audio.hollow('boss');
     }
@@ -373,10 +379,12 @@ export class HarvestScene {
       return;
     }
     let mult = 1;
-    if (s.burn > 0) mult *= 1 + st.burnAmp;
-    if (s.frozen > 0) mult *= st.frozenMult;
-    if (this.frenzy > 0) mult *= 1 + st.bloodlust;
-    if (o.lightning && st.supercon > 0 && (s.chill > 0.05 || s.frozen > 0)) mult *= 2;
+    if (!o.pure) {
+      if (s.burn > 0) mult *= 1 + st.burnAmp;
+      if (s.frozen > 0) mult *= st.frozenMult;
+      if (this.frenzy > 0) mult *= 1 + st.bloodlust;
+      if (o.lightning && st.supercon > 0 && (s.chill > 0.05 || s.frozen > 0)) mult *= 2;
+    }
     amount *= mult;
     let crit = false;
     if (o.canCrit && chance(st.critChance)) {
@@ -836,7 +844,7 @@ export class HarvestScene {
         if (heart.dead || this.view.destroyed) return;
         this.fx.emit({ x: heart.x, y: heart.y, texture: tex.frag, count: 10, color: [0xff3d63, 0xffd0da], speed: [120, 380], life: [0.4, 0.8], size: [0.4, 0.7], sizeEnd: 0.2, drag: 2.4, spin: [-10, 10], spread: heart.r * 0.6 });
         this.shake.add(0.12);
-        this.damage(heart, heart.maxHp * HAZARD_RULES.heartCrack, { dot: true });
+        this.damage(heart, heart.maxHp * HAZARD_RULES.heartCrack, { dot: true, pure: true });
         this.floatLabel(heart.x, heart.y - heart.r - 30, 'CRACK', 0xff8aa0, 16);
       },
     });
@@ -1002,6 +1010,10 @@ export class HarvestScene {
     this.echoG.position.set(this.echo.x, this.echo.y);
     this.echoG.rotation -= dt * 0.8;
 
+    // the Hollow Heart's bar, its old wounds apart from this harvest's
+    const b = this.boss;
+    this.game.hhud.setBoss(b ? (b.dead ? 0 : Math.max(0, b.hp) / b.maxHp) : null, b?.scar ?? 0);
+
     // timers
     if (!this.ended) {
       if (this.inOvertime) {
@@ -1052,7 +1064,7 @@ export class HarvestScene {
       }
       if (this.bossSpawnT > 0) {
         this.bossSpawnT -= dt;
-        if (this.bossSpawnT <= 0) this.spawn(this.w / 2, this.h * 0.42, 'boss');
+        if (this.bossSpawnT <= 0) this.spawn(this.w / 2, this.h * BOSS_Y, 'boss');
       }
       this.frenzy = Math.max(0, this.frenzy - dt);
       this.checkTrial();
@@ -1109,7 +1121,7 @@ export class HarvestScene {
       if (s.type === 'boss' && !this.ended) {
         // the heart drifts and calls warded shards up around it
         s.vx += (this.w / 2 - s.x) * 0.02 * dt;
-        s.vy += (this.h * 0.45 - s.y) * 0.02 * dt;
+        s.vy += (this.h * BOSS_Y - s.y) * 0.02 * dt;
         if (Math.random() < dt / 3.2) {
           const a = rand(0, TAU);
           this.spawn(s.x + Math.cos(a) * (s.r + 60), s.y + Math.sin(a) * (s.r + 60), 'warded');

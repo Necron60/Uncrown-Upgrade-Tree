@@ -74,6 +74,8 @@ export class Shard {
   flash = 0;
   punch = 0;
   hpShow = 0;
+  /** the Hollow Heart: the share of it broken in earlier harvests, drawn as a scar on its ring */
+  scar = 0;
   satCd = 0;
   dead = false;
   /** seconds of fire left; damage builds up in burnAcc and lands in small ticks */
@@ -321,6 +323,11 @@ export class Shard {
     const frac = Math.max(0, this.hp / this.maxHp);
     const a0 = -Math.PI / 2;
     g.moveTo(Math.cos(a0) * rr, Math.sin(a0) * rr).arc(0, 0, rr, a0, a0 + TAU).stroke({ width: 3, color: 0xffffff, alpha: 0.12 });
+    if (this.scar > 0.002) {
+      // what earlier harvests broke stays dark: the ring ends where this harvest's damage began
+      const s0 = a0 + TAU * (1 - this.scar);
+      g.moveTo(Math.cos(s0) * rr, Math.sin(s0) * rr).arc(0, 0, rr, s0, a0 + TAU).stroke({ width: 4, color: 0x7a1830, alpha: 0.75 });
+    }
     if (frac > 0) {
       g.moveTo(Math.cos(a0) * rr, Math.sin(a0) * rr).arc(0, 0, rr, a0, a0 + TAU * frac)
         .stroke({ width: this.type === 'boss' ? 4 : 3, color: this.big ? 0xff8fa3 : 0xffffff, alpha: 0.9, cap: 'round' });

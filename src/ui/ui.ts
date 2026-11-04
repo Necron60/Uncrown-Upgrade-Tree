@@ -455,6 +455,8 @@ export class HarvestHud {
   private comboMeter: HTMLElement;
   private kills: HTMLElement;
   private banner: HTMLElement;
+  private bossEl: HTMLElement;
+  private bossKey = '';
   readonly settingsBtn: HTMLButtonElement;
   private lastCombo = 0;
   private tree: TreeDef = TREES.bloom;
@@ -486,10 +488,12 @@ export class HarvestHud {
 
     this.kills = h('div', 'kills', 'shards broken<b>0</b>');
     this.banner = h('div', 'banner');
+    this.bossEl = h('div', 'bossbar', `<div class="bb-row"><span class="lbl">the hollow heart</span><span class="pct"></span></div>`
+      + `<div class="bb-bar"><i class="bb-scar"></i><i class="bb-trail"></i><i class="bb-fill"></i></div><div class="bb-note"></div>`);
     this.settingsBtn = h('button', 'icon-btn hh-settings', ICON.settings);
     this.settingsBtn.title = 'Pause and settings (Esc)';
     this.settingsBtn.setAttribute('aria-label', this.settingsBtn.title);
-    this.root.append(tl, this.timer, this.combo, this.kills, this.banner, this.settingsBtn);
+    this.root.append(tl, this.timer, this.combo, this.kills, this.bossEl, this.banner, this.settingsBtn);
     host.append(this.root);
     gsap.set(this.root, { autoAlpha: 0 });
   }
@@ -504,6 +508,7 @@ export class HarvestHud {
     if (on) {
       this.lumen.set(0, false);
       this.prism.set(0, false);
+      this.setBoss(null);
       gsap.fromTo(this.timer, { y: -16, opacity: 0 }, { y: 0, opacity: 1, duration: 0.6, ease: 'expo.out', delay: 0.15 });
     }
     gsap.to(this.root, { autoAlpha: on ? 1 : 0, duration: on ? 0.4 : 0.3 });
@@ -535,6 +540,35 @@ export class HarvestHud {
     this.trialEl.innerHTML = `<span>trial passed</span><b>${t.name}</b>`;
     gsap.fromTo(this.trialEl, { scale: 1.25 }, { scale: 1, duration: 0.6, ease: 'back.out(3)' });
     if (banner) this.showBanner('Trial passed', t.name, 'rgba(216,204,255,0.85)');
+  }
+
+  /**
+   * The Hollow Heart's health: what is left of it, what this harvest broke, and (hatched) what
+   * earlier harvests broke, so a heart that returns half broken does not look freshly hurt.
+   * `frac` is the share left (null: it has not risen), `scar` the share broken before this harvest.
+   */
+  setBoss(frac: number | null, scar = 0) {
+    const pct = (v: number) => `${(v * 100).toFixed(v > 0 && v < 0.1 ? 1 : 0)}%`;
+    const now = frac == null ? 0 : Math.max(0, 1 - frac - scar);
+    const key = frac == null ? '' : `${(frac * 1000).toFixed(0)}|${(scar * 1000).toFixed(0)}`;
+    if (key === this.bossKey) return;
+    const was = this.bossKey;
+    this.bossKey = key;
+    if (frac == null) {
+      gsap.killTweensOf(this.bossEl);
+      gsap.set(this.bossEl, { autoAlpha: 0 });
+      return;
+    }
+    if (!was) gsap.fromTo(this.bossEl, { autoAlpha: 0, y: 12 }, { autoAlpha: 1, y: 0, duration: 0.7, ease: 'expo.out' });
+    const q = <T extends HTMLElement>(sel: string) => this.bossEl.querySelector<T>(sel)!;
+    q('.bb-fill').style.transform = `scaleX(${frac})`;
+    q('.bb-trail').style.transform = `scaleX(${frac})`;
+    q('.bb-scar').style.width = `${scar * 100}%`;
+    q('.pct').textContent = frac > 0 ? `${pct(frac)} left` : 'broken';
+    const note = scar > 0.005
+      ? `<b class="old">${pct(scar)}</b> broken in earlier harvests${now > 0.0005 ? ` · <b>${pct(now)}</b> this harvest` : ''}`
+      : now > 0.0005 ? `<b>${pct(now)}</b> broken this harvest` : 'every hazard you break cracks it';
+    q('.bb-note').innerHTML = note;
   }
 
   addTimeFx() {
