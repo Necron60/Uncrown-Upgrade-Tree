@@ -12,12 +12,11 @@ import {
   buy, checkBuy, currentTrial, isOwned, level, lightCap, lightUsed, nextCost, spentOn, statsFor, trialMet, trialProgress, unweave, unweaveBlock,
 } from '../src/systems/tree-logic';
 import type { Stats } from '../src/data/stats';
+import { HAZARD_RULES } from '../src/data/hazards';
 
 const AREA = 1440 * 780;
 const SKILL = 2.2;
 const HAZ = ['warded', 'thief', 'dimmer', 'skittish'] as const;
-/** share of the Hollow Heart's health each hazard broken takes (as in the game) */
-const HEART_CRACK = 0.02;
 const HZ = { warded: { hp: 1, value: 2 }, thief: { hp: 2, value: 3 }, dimmer: { hp: 2.5, value: 3 }, skittish: { hp: 0.8, value: 4 } };
 
 export let seed = 1;
@@ -36,7 +35,8 @@ export function simulateCrownRun(st: Stats, depth: number, boss: boolean, wounds
   let shards: S[] = [];
   let lumen = 0, prism = 0, kills = 0, hazards = 0, bossKills = 0, stolen = 0, timeBonuses = 0;
   const killTimes: number[] = [];
-  const hazardChance = Math.min(0.45, (0.05 + 0.025 * depth) * st.hazardMult);
+  let heartDown = false;
+  const hazardChance = HAZARD_RULES.chance(depth, st.hazardMult);
   const pickTier = () => {
     const r = rnd();
     if (st.tier3 > 0) return r < 0.22 ? 2 : r < 0.54 ? 1 : 0;
@@ -51,7 +51,7 @@ export function simulateCrownRun(st: Stats, depth: number, boss: boolean, wounds
     const hp = d.hp * deep.hp * (type === 'boss' ? 1 : st.shardHp) * (hz?.hp ?? (type === 'gold' ? 1.2 : 1));
     return {
       hp, max: hp, tier, type, r: d.r, value: d.value * deep.value, bonus: hz?.value ?? 1, hazard: !!hz,
-      wards: type === 'warded' ? Math.min(7, 3 + depth) : 0, fuse: type === 'thief' ? st.thiefTime : 0,
+      wards: type === 'warded' ? HAZARD_RULES.wards(depth) : 0, fuse: type === 'thief' ? st.thiefTime : 0,
       burn: hz && st.hellfire > 0 ? st.burnTime * 2 : 0, chill: 0, frost: 0, frozen: 0,
     };
   };
@@ -88,14 +88,19 @@ export function simulateCrownRun(st: Stats, depth: number, boss: boolean, wounds
       // every hazard broken cracks the Hollow Heart
       const heart = shards.find((x) => x.type === 'boss' && x.hp > 0);
       if (heart) {
-        heart.hp -= heart.max * HEART_CRACK;
+        heart.hp -= heart.max * HAZARD_RULES.heartCrack;
         if (heart.hp <= 0) kill(heart, false, false, 0);
       }
       prism += Math.floor(st.sigilChance) + (rnd() < st.sigilChance % 1 ? 1 : 0);
       if (st.bloodlust > 0) frenzy = 4;
       if (st.devour > 0) addTime(st.devour);
     }
-    if (s.type === 'boss') prism += 20;
+    if (s.type === 'boss') {
+      prism += 20;
+      // without its heart, everything left in the void shatters, and the night ends
+      for (const o of shards) if (o.hp > 0 && o !== s) kill(o, false, false, 3);
+      heartDown = true;
+    }
     if (s.type === 'gold' && st.goldSigil > 0 && rnd() < st.goldSigil) prism += 1;
     if (s.type === 'time') addTime(st.timeShardBonus);
     if (s.type === 'gold' && st.goldenHour > 0) addTime(0.3);
@@ -151,7 +156,7 @@ export function simulateCrownRun(st: Stats, depth: number, boss: boolean, wounds
   };
 
   for (let i = 0; i < Math.min(st.maxShards, 6); i++) spawn();
-  while (t < 400) {
+  while (t < 400 && !heartDown) {
     t += dt;
     if (inOT) { overtime -= dt; if (overtime <= 0) break; }
     else {
@@ -171,7 +176,7 @@ export function simulateCrownRun(st: Stats, depth: number, boss: boolean, wounds
     while (spawnAcc >= 1) { spawnAcc -= 1; spawn(); for (let c = 0; c < Math.round(st.cluster); c++) spawn(); }
     if (shards.some((s) => s.type === 'boss' && s.hp > 0) && rnd() < dt / 3.2) spawn('warded');
     const dimmers = shards.filter((s) => s.type === 'dimmer' && s.hp > 0).length;
-    const R = st.radius * (1 + st.radiusGrowth * t) * Math.max(0.45, Math.pow(0.78, dimmers));
+    const R = st.radius * (1 + st.radiusGrowth * t) * Math.max(HAZARD_RULES.dimMin, Math.pow(HAZARD_RULES.dimPer, dimmers));
     pulseAcc += dt;
     while (pulseAcc >= 1 / st.pulseRate) {
       pulseAcc -= 1 / st.pulseRate;
@@ -277,7 +282,7 @@ export function playthrough(focus: Branch[], fork: 'a' | 'b', s0 = 99, maxRuns =
   while (runs < maxRuns && !p.awakened) {
     const st = statsFor(CROWN, p.levels);
     const trial = currentTrial(CROWN, p);
-    const boss = CROWN.trials!.every((t) => t.goal.kind === 'boss' || p.trials.includes(t.id));
+    const boss = !p.trials.includes('heart') && CROWN.trials!.every((t) => t.goal.kind === 'boss' || p.trials.includes(t.id));
     const r = simulateCrownRun(st, p.trials.length, boss, p.heart);
     if (boss) p.heart = Math.max(p.heart, r.bossFrac);
     runs++;

@@ -12,6 +12,7 @@ import { audio } from '../systems/audio';
 import type { Game } from '../game/Game';
 import type { RunResult } from '../ui/ui';
 import { HAZARDS, Shard, type HazardType, type ShardType } from './harvest/Shard';
+import { HAZARD_RULES } from '../data/hazards';
 
 /** What a harvest needs to know beyond the stats: whose tree, how deep, what it is trying for. */
 export interface HarvestOpts {
@@ -102,8 +103,7 @@ interface HitOpts {
 }
 
 const ARC_RANGE = 240;
-/** share of the Hollow Heart's health each hazard broken while it is up takes */
-const HEART_CRACK = 0.02;
+
 const NOVA_RANGE = 100;
 
 export class HarvestScene {
@@ -272,7 +272,7 @@ export class HarvestScene {
   /** The Hollow Crown fights back: a share of shards rise as hazards, more with every gate passed. */
   private get hazardChance(): number {
     if (!this.opts.tree.trials) return 0;
-    return Math.min(0.45, (0.05 + 0.025 * this.opts.depth) * this.st.hazardMult);
+    return HAZARD_RULES.chance(this.opts.depth, this.st.hazardMult);
   }
 
   private pickType(): ShardType {
@@ -309,7 +309,7 @@ export class HarvestScene {
     }
     if (this.st.shardHp !== 1 && type !== 'boss') def = { ...def, hp: def.hp * this.st.shardHp };
     const s = new Shard(def, tier, type, clamp(px, m, this.w - m), clamp(py, top, this.h - m), {
-      wards: type === 'warded' ? Math.min(7, 3 + this.opts.depth) : 0,
+      wards: type === 'warded' ? HAZARD_RULES.wards(this.opts.depth) : 0,
       fuse: type === 'thief' ? this.st.thiefTime : 0,
     });
     this.shards.push(s);
@@ -594,11 +594,7 @@ export class HarvestScene {
       this.shake.add(s.type === 'boss' ? 1.2 : 0.85);
       this.game.flash(s.type === 'boss' ? 0.8 : 0.55, 0.05, s.type === 'boss' ? 1 : 0.5, s.type === 'boss' ? '#ffd0da' : undefined);
       audio.special('heart');
-      if (s.type === 'boss') {
-        audio.hollow('boss');
-        this.game.hhud.showBanner('The Hollow Heart breaks', '', 'rgba(255,60,99,0.9)');
-        for (let i = 0; i < 3; i++) this.after(i * 0.12, () => this.fx.emit({ x: s.x, y: s.y, texture: tex.ring, count: 1, color: i === 1 ? 0xffffff : s.color, speed: [0, 0], life: [0.7, 0.7], size: [0.4, 0.4], sizeEnd: 12 + i * 4, alpha: 0.8 }));
-      }
+      if (s.type === 'boss') this.heartBreaks(s);
       this.floatLabel(s.x, s.y - 30, `+${fmt(lumen)}`, 0xffd77a, 30);
     } else {
       this.shake.add(0.04 + s.tier * 0.05 + (s.type !== 'normal' ? 0.05 : 0));
@@ -781,6 +777,41 @@ export class HarvestScene {
     if (this.st.strikeArc > 0 && !s.dead) this.arcFrom(s, this.pulseDamage() * 0.6, Math.max(1, Math.round(this.st.arcChains)));
   }
 
+  /**
+   * The Hollow Heart breaks: time all but stops, light tears out of it, and without its heart every
+   * crystal in the void shatters, rippling outward. Then the night ends on it.
+   */
+  private heartBreaks(s: Shard) {
+    const tex = textures();
+    const { x, y } = s;
+    const m = this.game.motion;
+    audio.hollow('boss');
+    gsap.delayedCall(0.35, () => audio.awaken());
+    if (m.slowmo) {
+      this.hitStop = 0.45;
+      gsap.fromTo(this, { timeScale: 0.2 }, { timeScale: 1, duration: 1.6, ease: 'power2.in' });
+    }
+    this.game.flash(0.9, 0.04, 1.4, '#ffd6de');
+    this.shake.add(1.4);
+    this.game.hhud.showBanner('The Hollow Heart breaks', this.opts.trial?.goal.kind === 'boss' ? 'the crown can be broken' : '', 'rgba(255,60,99,0.95)');
+    // rings of light, a long flare, sparks and fragments thrown across the whole screen
+    for (let i = 0; i < 5; i++) {
+      this.after(i * 0.09, () => this.fx.emit({ x, y, texture: tex.ring, count: 1, color: i % 2 ? 0xffffff : 0xff3d63, speed: [0, 0], life: [0.9, 0.9], size: [0.4, 0.4], sizeEnd: 14 + i * 5, alpha: 0.85 }));
+    }
+    this.fx.emit({ x, y, texture: tex.flare4, count: 1, color: 0xffe0e6, speed: [0, 0], life: [1.1, 1.1], size: [(s.r * 14) / 512, (s.r * 14) / 512], sizeEnd: 0.1, alpha: 1, spin: [0.6, 0.9] });
+    this.fx.emit({ x, y, texture: tex.glow, count: 1, color: 0xff6f8a, speed: [0, 0], life: [0.8, 0.8], size: [(s.r * 10) / 128, (s.r * 10) / 128], sizeEnd: 2, alpha: 0.7 });
+    this.fx.emit({ x, y, texture: tex.spark, count: 220, color: [0xffffff, 0xff8aa0, 0xff3d63, 0xffd0da], speed: [300, 1600], life: [0.6, 1.6], size: [0.4, 0.9], drag: 1.6, stretch: 0.0025 });
+    this.fx.emit({ x, y, texture: tex.frag, count: 70, color: [0xff3d63, 0xffd0da, 0xffffff], speed: [200, 900], life: [0.8, 1.6], size: [0.6, 1.1], sizeEnd: 0.2, drag: 1.4, spin: [-12, 12] });
+    // the void loses its heart: everything left shatters, nearest first
+    const rest = this.shards.filter((o) => !o.dead && o !== s);
+    for (const o of rest) {
+      const d = Math.hypot(o.x - x, o.y - y);
+      this.after(0.25 + d / 1500, () => { if (!o.dead && !this.ended) this.kill(o, {}); });
+    }
+    this.bossSpawnT = 0;
+    this.after(1.7, () => this.end());
+  }
+
   /** Every hazard broken while the Hollow Heart is up cracks it: light runs from the hazard into the heart. */
   private crackHeart(from: Shard) {
     const heart = this.shards.find((x) => x.type === 'boss' && !x.dead);
@@ -805,7 +836,7 @@ export class HarvestScene {
         if (heart.dead || this.view.destroyed) return;
         this.fx.emit({ x: heart.x, y: heart.y, texture: tex.frag, count: 10, color: [0xff3d63, 0xffd0da], speed: [120, 380], life: [0.4, 0.8], size: [0.4, 0.7], sizeEnd: 0.2, drag: 2.4, spin: [-10, 10], spread: heart.r * 0.6 });
         this.shake.add(0.12);
-        this.damage(heart, heart.maxHp * HEART_CRACK, { dot: true });
+        this.damage(heart, heart.maxHp * HAZARD_RULES.heartCrack, { dot: true });
         this.floatLabel(heart.x, heart.y - heart.r - 30, 'CRACK', 0xff8aa0, 16);
       },
     });
@@ -847,7 +878,8 @@ export class HarvestScene {
     }
     if (trialMet(t, r)) {
       this.trialDone = true;
-      this.game.hhud.trialPassed(t);
+      // the Hollow Heart's own banner says it; the others get the trial's
+      this.game.hhud.trialPassed(t, t.goal.kind !== 'boss');
       audio.hollow('trial');
       this.game.flash(0.25, 0.05, 0.6, '#d8ccff');
     }
@@ -1106,7 +1138,7 @@ export class HarvestScene {
       }
     }
     this.shards = this.shards.filter((s) => !s.dead);
-    const df = Math.max(0.45, Math.pow(0.78, dimmers));
+    const df = Math.max(HAZARD_RULES.dimMin, Math.pow(HAZARD_RULES.dimPer, dimmers));
     this.dimFactor += (df - this.dimFactor) * Math.min(1, dt * 5);
     this.lensGlow.tint = this.inOvertime ? 0xffb36b : dimmers ? 0x8a6cff : 0x9fe8ff;
 

@@ -98,6 +98,8 @@ export class NodeView {
   private stateScale = 1;
   private pulseT = Math.random();
   private awakenReady = false;
+  /** the Hollow Crown's centre, once its heart is broken (until it is uncrowned) */
+  private broken = false;
   private drawn = false;
   awakened = false;
 
@@ -170,7 +172,7 @@ export class NodeView {
     }
   }
 
-  setState(state: NodeState, level: number, affordable: boolean, extra?: { awakenReady?: boolean; awakened?: boolean; keystones?: Record<string, boolean> }) {
+  setState(state: NodeState, level: number, affordable: boolean, extra?: { awakenReady?: boolean; awakened?: boolean; keystones?: Record<string, boolean>; broken?: boolean }) {
     const changed = !this.drawn || state !== this.state || level !== this.level || affordable !== this.affordable
       || (extra && (extra.awakenReady !== this.awakenReady || extra.awakened !== this.awakened)) || this.def.kind === 'core';
     this.state = state;
@@ -179,6 +181,7 @@ export class NodeView {
     if (extra) {
       this.awakenReady = !!extra.awakenReady;
       this.awakened = !!extra.awakened;
+      this.broken = !!extra.broken;
     }
     if (changed) this.redraw(extra?.keystones);
   }
@@ -291,9 +294,23 @@ export class NodeView {
     this.body.circle(0, 0, r).stroke({ width: 3, color: warm, alpha: 1 });
     this.body.circle(0, 0, r * 0.72).stroke({ width: 1.5, color: warm, alpha: 0.5 });
     drawIcon(this.icon, this.def.icon, r * 0.55, 0xffffff, 1);
+    if (this.broken && !awakened) {
+      // cracked open: red light through the fractures
+      const crack = (pts: number[]) => {
+        this.body.moveTo(pts[0] * r, pts[1] * r);
+        for (let i = 2; i < pts.length; i += 2) this.body.lineTo(pts[i] * r, pts[i + 1] * r);
+      };
+      for (const [w, col, a] of [[5, 0xff3d63, 0.35], [1.6, 0xffd0da, 0.95]] as const) {
+        crack([-0.05, -1, 0.12, -0.55, -0.1, -0.2, 0.15, 0.25, 0.02, 0.6, 0.1, 1]);
+        crack([0.12, -0.55, 0.55, -0.62, 0.85, -0.5]);
+        crack([-0.1, -0.2, -0.55, 0.05, -0.95, 0.15]);
+        crack([0.15, 0.25, 0.6, 0.45]);
+        this.body.stroke({ width: w, color: col, alpha: a, cap: 'round', join: 'round' });
+      }
+    }
     this.haloBase = awakened ? 0.5 : this.awakenReady ? 0.45 : 0.34;
-    this.flare.tint = pal.flare;
-    this.halo.tint = pal.halo;
+    this.flare.tint = this.broken && !awakened ? 0xffd6de : pal.flare;
+    this.halo.tint = this.broken && !awakened ? 0xff5a7a : pal.halo;
 
     // one arc per keystone, lit once that keystone is
     const qr = r + 16;

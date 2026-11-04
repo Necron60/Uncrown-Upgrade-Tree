@@ -166,9 +166,15 @@ describe('the Hollow Crown', () => {
     p.trials.push('gate_2');
     expect(lightCap(CROWN, p)).toBe(6 + CROWN.trials![0].light);
     expect(buy(CROWN, C.ember_2a, p).ok).toBe(true); // a mechanic: 2 light
-    for (const id of ['ember_2b', 'frost_2b', 'storm_2b']) expect(buy(CROWN, C[id], p).ok, id).toBe(true);
-    expect(lightUsed(CROWN, p.levels)).toBe(11);
-    expect(checkBuy(CROWN, C.tide_2b, p)).toEqual({ ok: false, reason: 'dark' });
+    const minors = ['ember_2b', 'frost_2b', 'storm_2b', 'tide_2b', 'gild_2b'];
+    let i = 0;
+    while (lightUsed(CROWN, p.levels) < lightCap(CROWN, p)) expect(buy(CROWN, C[minors[i++]], p).ok).toBe(true);
+    expect(checkBuy(CROWN, C[minors[i]], p)).toEqual({ ok: false, reason: 'dark' });
+    // the finale and curses burn no light, so a full tree never blocks them on light
+    p.trials = CROWN.trials!.map((t) => t.id);
+    p.levels.ember_5 = 1;
+    p.levels.storm_5 = 1;
+    expect(checkBuy(CROWN, C.uncrown, p)).toBeNull();
   });
 
   it('seals rings behind trials', () => {

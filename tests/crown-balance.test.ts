@@ -27,11 +27,11 @@ describe('the Hollow Crown: balance', () => {
     console.log(rows.join('\n'));
     const sorted = [...totals].sort((x, y) => x - y);
     console.log(`median ${sorted[sorted.length >> 1]} runs, fastest ${sorted[0]}, slowest ${sorted[sorted.length - 1]}`);
-    for (const r of totals) expect(r).toBeLessThan(600); // nobody is stuck
-    // the second tree is the long one: the Bloom takes about 60 harvests
+    for (const r of totals) expect(r).toBeLessThan(800); // nobody is stuck
+    // the second tree is the long, hard one: the Bloom takes about 60 harvests
     const median = sorted[sorted.length >> 1];
-    expect(median).toBeGreaterThan(150);
-    expect(median).toBeLessThan(350);
+    expect(median).toBeGreaterThan(220);
+    expect(median).toBeLessThan(420);
   });
 
   it('the first harvest affords a star', () => {

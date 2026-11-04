@@ -114,7 +114,8 @@ export function checkBuy(tree: TreeDef, def: NodeDef, p: TreeProgress): Extract<
     if (sealedBy(tree, def, p.levels)) return { ok: false, reason: 'sealed' };
     if (gateOf(tree, def, p)) return { ok: false, reason: 'gated' };
     if (!isUnlocked(def, p.levels)) return { ok: false, reason: 'locked' };
-    if (lightUsed(tree, p.levels) + lightCost(def) > lightCap(tree, p)) return { ok: false, reason: 'dark' };
+    // only stars that burn light can run short of it (curses and the finale burn none)
+    if (lightCost(def) > 0 && lightUsed(tree, p.levels) + lightCost(def) > lightCap(tree, p)) return { ok: false, reason: 'dark' };
   }
   if (!canAfford(costAt(def, lvl), p)) return { ok: false, reason: 'poor' };
   return null;

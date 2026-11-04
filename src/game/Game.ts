@@ -606,8 +606,9 @@ export class Game {
     const p = this.prog;
     const stats = statsFor(def, p.levels);
     this.runTrial = currentTrial(def, p);
-    // the Hollow Heart rises once every ring is open
-    const boss = !!def.trials?.some((t) => t.goal.kind === 'boss') && def.trials.every((t) => t.goal.kind === 'boss' || p.trials.includes(t.id));
+    // the Hollow Heart rises once every ring is open, until it is broken
+    const heart = def.trials?.find((t) => t.goal.kind === 'boss');
+    const boss = !!heart && !p.trials.includes(heart.id) && def.trials!.every((t) => t === heart || p.trials.includes(t.id));
     const hs = new HarvestScene(this, stats, {
       tree: def, depth: p.trials.length, boss, bossWounds: p.heart, trial: this.runTrial,
       seen: new Set(this.state.tips.filter((t) => t.startsWith('hz:')).map((t) => t.slice(3))),
@@ -696,7 +697,7 @@ export class Game {
       // the gate opens once the camera has settled
       gsap.delayedCall(0.9, () => {
         if (gate.ring >= 2) this.tree.openGate(gate.ring);
-        else this.tree.sync();
+        else this.tree.crackCrown();
         this.syncHud();
         const what = gate.ring >= 2 ? `<span>a ring opens</span><b>+${gate.light} light</b>` : '<span>the crown can be broken</span>';
         this.hud.toast(`<span>${gate.name}</span>${what}`, 'var(--gold-hi)', 4);

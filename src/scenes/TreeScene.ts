@@ -237,6 +237,26 @@ export class TreeScene {
     }
   }
 
+  /** The Hollow Heart was broken: the crown at the centre cracks open, and Uncrown waits. */
+  crackCrown() {
+    const c = this.core;
+    const tex = textures();
+    const reduced = this.game.state.settings.reducedMotion;
+    const fs = Math.max(0.25, this.game.motion.flashes);
+    audio.hollow('boss');
+    this.sync();
+    gsap.fromTo(c, { punch: 1.5 }, { punch: 1, duration: 1.2, ease: 'elastic.out(1, 0.3)' });
+    gsap.fromTo(c, { flash: 1.6 * fs }, { flash: 0, duration: 1.4 });
+    gsap.fromTo(c, { flareBoost: 2.6 }, { flareBoost: 1, duration: 1.6, ease: 'expo.out' });
+    for (let i = 0; i < 3; i++) gsap.delayedCall(i * 0.14, () => this.shockRing(c.x, c.y, c.r, c.r * (5 + i * 2.5), i === 1 ? 0xffffff : 0xff3d63, 1.2, 0.85));
+    this.game.shake.add(0.7);
+    this.shockwave(c.x, c.y, 26, 1.4);
+    if (!reduced) {
+      this.fx.emit({ x: c.x, y: c.y, texture: tex.spark, count: 140, color: [0xff3d63, 0xffd0da, 0xffffff, this.tree.ringColor], speed: [200, 1000], life: [0.5, 1.4], size: [0.4, 0.8], drag: 2, stretch: 0.003 });
+      this.fx.emit({ x: c.x, y: c.y, texture: tex.frag, count: 40, color: [0xff3d63, 0xffd0da], speed: [100, 500], life: [0.7, 1.4], size: [0.5, 0.9], sizeEnd: 0.2, drag: 2, spin: [-10, 10] });
+    }
+  }
+
   /** A trial was passed: its gate breaks open with light running around the ring. */
   openGate(ring: number) {
     const g = this.gates.get(ring);
@@ -282,10 +302,12 @@ export class TreeScene {
     const ks: Record<string, boolean> = {};
     for (const k of this.tree.keystones) ks[k] = isOwned(s.levels, k);
     const awakenReady = nodeState(this.tree, this.tree.map[this.tree.finale], s) === 'available' && !s.awakened;
+    // the Hollow Heart broken: the crown at the centre stays cracked open
+    const broken = !!this.tree.trials?.some((t) => t.goal.kind === 'boss' && s.trials.includes(t.id));
     for (const nv of this.nodes.values()) {
       const st = nodeState(this.tree, nv.def, s);
       const aff = st === 'available' || st === 'owned' ? canAfford(nextCost(nv.def, s.levels), s) : false;
-      nv.setState(st, level(s.levels, nv.def.id), aff, nv.def.kind === 'core' ? { awakenReady, awakened: s.awakened, keystones: ks } : undefined);
+      nv.setState(st, level(s.levels, nv.def.id), aff, nv.def.kind === 'core' ? { awakenReady, awakened: s.awakened, keystones: ks, broken } : undefined);
     }
     for (const e of this.edges) e.setState(this.edgeState(e));
     this.placeLayers();

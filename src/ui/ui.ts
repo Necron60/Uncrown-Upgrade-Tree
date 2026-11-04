@@ -530,11 +530,11 @@ export class HarvestHud {
       : `<span>trial · ${t.name.toLowerCase()}</span><b>${fmt(Math.min(v, t.goal.n))} / ${fmt(t.goal.n)}${unit}</b>`;
   }
 
-  trialPassed(t: TrialDef) {
+  trialPassed(t: TrialDef, banner = true) {
     this.trialEl.classList.add('done');
     this.trialEl.innerHTML = `<span>trial passed</span><b>${t.name}</b>`;
     gsap.fromTo(this.trialEl, { scale: 1.25 }, { scale: 1, duration: 0.6, ease: 'back.out(3)' });
-    this.showBanner('Trial passed', t.name, 'rgba(216,204,255,0.85)');
+    if (banner) this.showBanner('Trial passed', t.name, 'rgba(216,204,255,0.85)');
   }
 
   addTimeFx() {
