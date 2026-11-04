@@ -3,12 +3,13 @@ import { AlphaFilter, Container, Graphics, Sprite, Text } from 'pixi.js';
 import { ShockwaveFilter } from 'pixi-filters/shockwave';
 import { TAU, lerpColor, pick, rand } from '../core/math';
 import { fmt } from '../core/format';
-import { BRANCH_COLORS, KEYSTONES, NODES, NODE_MAP, RING_RADII, type Branch } from '../data/tree';
+import { BRANCH_COLORS, type TreeDef } from '../data/tree';
+import { progressOf, type TreeProgress } from '../core/state';
 import { Particles } from '../render/particles';
 import { textures } from '../render/textures';
 import { audio } from '../systems/audio';
 import {
-  canAfford, isOwned, level, nextCost, nodeState, pathToSeed, type BuyResult,
+  canAfford, isOwned, level, nextCost, nodeState, pathToSeed, type BuyResult, type UnweaveResult,
 } from '../systems/tree-logic';
 import type { Game } from '../game/Game';
 import { Camera } from './tree/Camera';
@@ -95,23 +96,33 @@ export class TreeScene {
   private t = 0;
   private ambientT = 0;
   private savedCam = { x: 0, y: 0, z: 0.9 };
+  /** the node at the centre (the seed, the crown) */
+  readonly core: NodeView;
+  /** sealed rings (trees with trials), by ring index */
+  private gates = new Map<number, Graphics>();
+  /** the either/or links between fork pairs */
+  private forkLinks: { g: Graphics; a: NodeView; b: NodeView }[] = [];
+  /** drawn above the darkness: gates and forks must read as structure, not as part of the dark */
+  private overLayer = new Container();
+  private longPress = { timer: 0, fired: false };
 
-  constructor(private game: Game) {
+  constructor(private game: Game, readonly tree: TreeDef) {
     this.view.addChild(this.world);
     // light (pulses, traces, bursts) is drawn *above* the darkness so it shines through it
-    this.world.addChild(this.rings, this.edgeLayer, this.nodeLayer, this.darkLayer, this.litEdgeLayer, this.pulseLayer, this.litNodeLayer, this.traceLayer, this.fxLayer);
+    this.world.addChild(this.rings, this.edgeLayer, this.nodeLayer, this.darkLayer, this.overLayer, this.litEdgeLayer, this.pulseLayer, this.litNodeLayer, this.traceLayer, this.fxLayer);
     this.fxLayer.addChild(this.fx.view);
-    this.drawRings();
-    this.darkRect.rect(-7000, -7000, 14000, 14000).fill({ color: 0x020107 });
+    this.darkRect.rect(-7000, -7000, 14000, 14000).fill({ color: tree.voidColor });
     this.darkLayer.addChild(this.darkRect, this.lightLayer);
     // render the darkness as its own layer, so 'erase' cuts only the darkness and not the tree below
     this.darkLayer.filters = [new AlphaFilter({ alpha: 1 })];
 
-    for (const def of NODES) {
+    for (const def of tree.nodes) {
       if (def.kind === 'awaken') continue;
-      const nv = new NodeView(def);
+      const nv = new NodeView(def, tree);
       this.nodes.set(def.id, nv);
     }
+    this.core = this.nodes.get(tree.root)!;
+    this.drawRings();
     // core last so it draws on top
     const order = [...this.nodes.values()].sort((a, b) => b.def.ring - a.def.ring);
     for (const nv of order) this.nodeLayer.addChild(nv.c);
@@ -131,7 +142,7 @@ export class TreeScene {
     this.dawn.scale.set(0);
     this.lightLayer.addChild(this.dawn);
 
-    for (const def of NODES) {
+    for (const def of tree.nodes) {
       if (def.kind === 'awaken') continue;
       for (const p of def.parents) {
         const e = new EdgeView(this.nodes.get(p)!, this.nodes.get(def.id)!);
@@ -144,8 +155,9 @@ export class TreeScene {
 
   private drawRings() {
     const g = this.rings;
-    for (let i = 1; i < RING_RADII.length; i++) {
-      const r = RING_RADII[i];
+    const rings = this.tree.rings;
+    for (let i = 1; i < rings.length; i++) {
+      const r = rings[i];
       const n = 90 + i * 30;
       for (let k = 0; k < n; k++) {
         if (k % 3 === 2) continue;
@@ -153,25 +165,132 @@ export class TreeScene {
         const a1 = a0 + (TAU / n) * 0.6;
         g.moveTo(Math.cos(a0) * r, Math.sin(a0) * r).arc(0, 0, r, a0, a1);
       }
-      g.stroke({ width: 1, color: 0x8fa0ff, alpha: 0.07 });
+      g.stroke({ width: 1, color: this.tree.ringColor, alpha: 0.07 });
     }
+    // forks: a faint arc between the two sides of a choice, a small diamond where they meet
+    const forks = new Map<string, NodeView[]>();
+    for (const nv of this.nodes.values()) if (nv.def.fork) forks.set(nv.def.fork, [...(forks.get(nv.def.fork) ?? []), nv]);
+    for (const [, pair] of forks) {
+      if (pair.length !== 2) continue;
+      const [a, b] = pair;
+      const g = new Graphics();
+      this.overLayer.addChild(g);
+      this.forkLinks.push({ g, a, b });
+      const r = rings[a.def.ring];
+      const aa = (a.def.angle * Math.PI) / 180, ab = (b.def.angle * Math.PI) / 180;
+      const lo = Math.min(aa, ab) + (a.r + 10) / r, hi = Math.max(aa, ab) - (b.r + 10) / r;
+      const steps = 10;
+      for (let k = 0; k < steps; k++) {
+        const t0 = lo + ((hi - lo) * k) / steps, t1 = t0 + ((hi - lo) / steps) * 0.45;
+        g.moveTo(Math.cos(t0) * r, Math.sin(t0) * r).arc(0, 0, r, t0, t1);
+      }
+      g.stroke({ width: 1.4, color: a.color, alpha: 0.45 });
+      const m = (aa + ab) / 2, d = 5;
+      const mx = Math.cos(m) * r, my = Math.sin(m) * r;
+      g.poly([mx, my - d, mx + d, my, mx, my + d, mx - d, my]).fill({ color: 0x07050e, alpha: 1 }).stroke({ width: 1.3, color: a.color, alpha: 0.8 });
+    }
+    // sealed rings: a brighter, denser ring that stays until its trial is passed
+    for (const t of this.tree.trials ?? []) {
+      if (t.ring < 2) continue;
+      const gg = new Graphics();
+      const r = (rings[t.ring - 1] + rings[t.ring]) / 2;
+      const n = 220;
+      for (let k = 0; k < n; k++) {
+        const a0 = (k / n) * TAU;
+        gg.moveTo(Math.cos(a0) * r, Math.sin(a0) * r).arc(0, 0, r, a0, a0 + (TAU / n) * 0.42);
+      }
+      gg.stroke({ width: 2, color: this.tree.ringColor, alpha: 0.22 });
+      gg.circle(0, 0, r).stroke({ width: 12, color: this.tree.ringColor, alpha: 0.03 });
+      // seals where the branches meet
+      for (let k = 0; k < this.tree.branches.length; k++) {
+        const a = ((k + 0.5) / this.tree.branches.length) * TAU - Math.PI / 2;
+        const x = Math.cos(a) * r, y = Math.sin(a) * r, d = 7;
+        gg.poly([x, y - d, x + d, y, x, y + d, x - d, y]).fill({ color: 0x07050e, alpha: 1 }).stroke({ width: 1.4, color: this.tree.ringColor, alpha: 0.7 });
+      }
+      gg.visible = false;
+      this.overLayer.addChild(gg);
+      this.gates.set(t.ring, gg);
+    }
+  }
+
+  /** this tree's progress in the save */
+  get prog(): TreeProgress {
+    return progressOf(this.game.state, this.tree.id);
+  }
+
+  /** Show the gates that are still sealed, and the forks the player has reached (no animation). */
+  private syncGates() {
+    const p = this.prog;
+    for (const f of this.forkLinks) {
+      const seen = (n: NodeView) => n.state !== 'hidden' && n.state !== 'silhouette';
+      f.g.visible = seen(f.a) && seen(f.b);
+    }
+    for (const t of this.tree.trials ?? []) {
+      const g = this.gates.get(t.ring);
+      if (!g) continue;
+      const sealed = !p.trials.includes(t.id);
+      // only once the ring inside it has been reached, so the outer gates do not give the map away
+      const reached = this.tree.nodes.some((n) => n.ring === t.ring - 1 && n.kind !== 'core' && isOwned(p.levels, n.id));
+      if (!sealed) { g.visible = false; continue; }
+      g.visible = reached;
+      g.alpha = 1;
+    }
+  }
+
+  /** A trial was passed: its gate breaks open with light running around the ring. */
+  openGate(ring: number) {
+    const g = this.gates.get(ring);
+    const r = (this.tree.rings[ring - 1] + this.tree.rings[ring]) / 2;
+    const tex = textures();
+    const reduced = this.game.state.settings.reducedMotion;
+    audio.reveal(3);
+    gsap.delayedCall(0.15, () => audio.purchase(6, true));
+    if (g) {
+      g.visible = true;
+      gsap.to(g, { alpha: 0, duration: reduced ? 0.4 : 1.4, ease: 'power2.in', onComplete: () => { g.visible = false; g.alpha = 1; } });
+    }
+    this.shockRing(0, 0, r * 0.96, r * 1.08, this.tree.ringColor, 1.2, 0.9);
+    if (!reduced) {
+      this.game.shake.add(0.3);
+      // the light runs both ways round the ring from the top
+      for (let k = 0; k < 48; k++) {
+        gsap.delayedCall(k * 0.018, () => {
+          for (const dir of [-1, 1]) {
+            const a = -Math.PI / 2 + dir * (k / 48) * Math.PI;
+            this.fx.emit({ x: Math.cos(a) * r, y: Math.sin(a) * r, texture: tex.spark, count: 2, color: [this.tree.ringColor, 0xffffff], speed: [30, 160], life: [0.4, 0.9], size: [0.3, 0.55], drag: 2.5, stretch: 0.003 });
+            if (k % 4 === 0) this.fx.emit({ x: Math.cos(a) * r, y: Math.sin(a) * r, texture: tex.star4, count: 1, color: 0xffffff, speed: [0, 20], life: [0.5, 0.8], size: [0.4, 0.7], sizeEnd: 0, spin: [-2, 2] });
+          }
+        });
+      }
+    }
+    // the nodes behind it light up as the ring opens
+    for (const nv of this.nodes.values()) {
+      if (nv.def.ring !== ring || !nv.visible) continue;
+      const d = Math.abs(((nv.def.angle + 90 + 540) % 360) - 180) / 180;
+      gsap.delayedCall(0.2 + d * 0.9, () => {
+        gsap.fromTo(nv, { flash: 0.9 * this.game.motion.flashes }, { flash: 0, duration: 0.8 });
+        gsap.fromTo(nv, { punch: 1.25 }, { punch: 1, duration: 0.7, ease: 'elastic.out(1, 0.35)' });
+      });
+    }
+    this.sync();
   }
 
   // ───────────────────────────────────────────── state sync
   /** Bring every node/edge in line with the game state (no animation). */
   sync() {
-    const s = this.game.state;
+    const s = this.prog;
     const ks: Record<string, boolean> = {};
-    for (const k of KEYSTONES) ks[k] = isOwned(s.levels, k);
-    const awakenReady = nodeState(NODE_MAP.awaken, s.levels) === 'available' && !s.awakened;
+    for (const k of this.tree.keystones) ks[k] = isOwned(s.levels, k);
+    const awakenReady = nodeState(this.tree, this.tree.map[this.tree.finale], s) === 'available' && !s.awakened;
     for (const nv of this.nodes.values()) {
-      const st = nodeState(nv.def, s.levels);
+      const st = nodeState(this.tree, nv.def, s);
       const aff = st === 'available' || st === 'owned' ? canAfford(nextCost(nv.def, s.levels), s) : false;
       nv.setState(st, level(s.levels, nv.def.id), aff, nv.def.kind === 'core' ? { awakenReady, awakened: s.awakened, keystones: ks } : undefined);
     }
     for (const e of this.edges) e.setState(this.edgeState(e));
     this.placeLayers();
     this.updateBranchGlow();
+    this.syncGates();
   }
 
   /** Lit nodes and branches go above the darkness, everything still unlit below it. */
@@ -195,16 +314,16 @@ export class TreeScene {
     const ao = a === 'owned' || a === 'maxed';
     const bo = b === 'owned' || b === 'maxed';
     if (ao && bo) return 'active';
-    if (ao && b !== 'silhouette') return 'ready';
+    if (ao && (b === 'available' || b === 'locked')) return 'ready';
     return 'ghost';
   }
 
-  private updateBranchGlow() {
-    const s = this.game.state;
-    const branches: Branch[] = ['force', 'reach', 'flow', 'fortune'];
-    for (const b of branches) {
+  /** Every branch's investment lights its cloud in the background. */
+  updateBranchGlow() {
+    const s = this.prog;
+    for (const b of this.tree.branches) {
       let have = 0, max = 0;
-      for (const n of NODES) {
+      for (const n of this.tree.nodes) {
         if (n.branch !== b && n.branch2 !== b) continue;
         max += n.maxLevel;
         have += level(s.levels, n.id);
@@ -236,7 +355,7 @@ export class TreeScene {
 
   /** How dark the void beyond the tree's light is (player setting). Once awakened, it is lit for good. */
   setDarkness(level: keyof typeof DARKNESS) {
-    this.darkTarget = this.game.state.awakened ? 0 : DARKNESS[level];
+    this.darkTarget = this.prog.awakened ? 0 : DARKNESS[level];
     if (!this.view.visible) this.darkAlpha = this.darkTarget;
   }
 
@@ -254,7 +373,8 @@ export class TreeScene {
       r = nv.def.kind === 'keystone' ? 250 : nv.def.kind === 'minor' ? 140 : 170;
       if (st === 'maxed') r *= 1.12;
     } else if (st === 'available') r = nv.affordable ? 100 : 82; // an ember, enough to read the node
-    else if (st === 'locked') r = 58;
+    else if (st === 'locked' || st === 'gated') r = 58;
+    else if (st === 'sealed') r = 54;
     return (r + (nv.hover ? 45 : 0)) * nv.pop;
   }
 
@@ -286,7 +406,7 @@ export class TreeScene {
     this.cam.locked = true;
     return new Promise((res) => {
       gsap.to(this.cam, { x: 0, y: 0, zoom: 3.2, duration, ease: 'power3.in', onComplete: () => { this.cam.locked = false; this.cam.set(0, 0, 3.2, true); res(); } });
-      const core = this.nodes.get('seed')!;
+      const core = this.core;
       gsap.to(core, { flash: 1.5 * this.game.motion.flashes, duration: duration * 0.9, ease: 'power2.in', onComplete: () => { core.flash = 0; } });
     });
   }
@@ -319,6 +439,7 @@ export class TreeScene {
     const el = this.game.canvas;
     el.addEventListener('pointerdown', (e) => {
       if (!this.view.visible || !this.inputEnabled) return;
+      if (e.button !== 0) return; // right-click unweaves (contextmenu), it must not also buy
       audio.unlock();
       this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (this.touches.size === 2) {
@@ -336,6 +457,20 @@ export class TreeScene {
       p.vx = p.vy = 0;
       this.cam.vx = this.cam.vy = 0;
       el.setPointerCapture?.(e.pointerId);
+      // touch has no right-click: holding a lit star unweaves it
+      clearTimeout(this.longPress.timer);
+      this.longPress.fired = false;
+      if (e.pointerType === 'touch' && this.tree.light) {
+        const sx = e.clientX, sy = e.clientY;
+        this.longPress.timer = window.setTimeout(() => {
+          if (!p.down || p.moved > 6 || this.cam.dragging) return;
+          const nv = this.pick(sx, sy);
+          if (!nv || (nv.state !== 'owned' && nv.state !== 'maxed') || nv.def.kind === 'core') return;
+          this.longPress.fired = true;
+          this.setHovered(nv);
+          this.tryUnweave(nv);
+        }, 550);
+      }
     });
     el.addEventListener('pointermove', (e) => {
       if (!this.view.visible) return;
@@ -377,8 +512,10 @@ export class TreeScene {
     const up = (e: PointerEvent) => {
       this.touches.delete(e.pointerId);
       const p = this.pointer;
+      clearTimeout(this.longPress.timer);
       if (!p.down) return;
       p.down = false;
+      if (this.longPress.fired) return; // the hold already unwove a star
       if (this.cam.dragging) {
         this.cam.dragging = false;
         el.classList.remove('dragging');
@@ -412,6 +549,14 @@ export class TreeScene {
       const delta = e.deltaMode === 1 ? e.deltaY * 30 : e.deltaY;
       this.cam.zoomAt(e.clientX, e.clientY, Math.exp(-delta * 0.0016));
     }, { passive: false });
+    // right-click a lit star to unweave it (trees with limited light)
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (!this.view.visible || !this.inputEnabled || !this.tree.light) return;
+      this.updateHover(e.clientX, e.clientY);
+      const nv = this.hovered;
+      if (nv && (nv.state === 'owned' || nv.state === 'maxed')) this.tryUnweave(nv);
+    });
     el.addEventListener('dblclick', (e) => {
       if (!this.view.visible || !this.inputEnabled) return;
       this.updateHover(e.clientX, e.clientY);
@@ -443,7 +588,7 @@ export class TreeScene {
     if (nv) {
       nv.hover = true;
       audio.hover();
-      const path = pathToSeed(nv.def.id, this.game.state.levels);
+      const path = pathToSeed(this.tree, nv.def.id, this.prog.levels);
       for (let i = 0; i < path.length - 1; i++) {
         const e = this.edges.find((x) => x.to.def.id === path[i] && x.from.def.id === path[i + 1]);
         e?.setHighlight(true);
@@ -459,9 +604,8 @@ export class TreeScene {
   private showTooltip() {
     const nv = this.hovered;
     if (!nv) return;
-    const def = nv.def.kind === 'core' ? NODE_MAP.seed : nv.def;
     const p = this.cam.worldToScreen(nv.x, nv.y);
-    this.game.tooltip.show(def, this.game.state, p.x, p.y, nv.r * this.cam.zoom * 1.1);
+    this.game.tooltip.show(this.tree, nv.def, this.prog, p.x, p.y, nv.r * this.cam.zoom * 1.1);
   }
 
   private clickNode(nv: NodeView) {
@@ -471,11 +615,7 @@ export class TreeScene {
       void this.game.startHarvest();
       return;
     }
-    if (st === 'silhouette') {
-      this.wobble(nv, 0.5);
-      return;
-    }
-    if (st === 'maxed') {
+    if (st === 'silhouette' || st === 'maxed') {
       this.wobble(nv, 0.5);
       return;
     }
@@ -567,7 +707,7 @@ export class TreeScene {
 
   /** Segments from a node back down its path to the seed. */
   private pathSegs(id: string): { e: EdgeView; rev: boolean }[] {
-    const path = pathToSeed(id, this.game.state.levels);
+    const path = pathToSeed(this.tree, id, this.prog.levels);
     const segs: { e: EdgeView; rev: boolean }[] = [];
     for (let i = 0; i < path.length - 1; i++) {
       const e = this.edges.find((x) => x.to.def.id === path[i] && x.from.def.id === path[i + 1]);
@@ -645,7 +785,7 @@ export class TreeScene {
   celebrate(nv: NodeView, res: Extract<BuyResult, { ok: true }>) {
     const reduced = this.game.state.settings.reducedMotion;
     const first = res.newLevel === 1;
-    const levels = this.game.state.levels;
+    const levels = this.prog.levels;
     const revealed = res.revealed.map((id) => this.nodes.get(id)).filter((n): n is NodeView => !!n);
 
     // newly revealed nodes stay hidden until the light reaches them
@@ -729,8 +869,8 @@ export class TreeScene {
     if (big) {
       this.game.shake.add(0.55);
       this.shockwave(x, y, 16, 1.1);
-      // the keystone's light runs home along the branches and lights a quarter of the seed
-      const core = this.nodes.get('seed')!;
+      // the keystone's light runs home along the branches and lights its arc of the seed
+      const core = this.core;
       gsap.delayedCall(0.25, () => {
         audio.trace(5);
         this.startTrace(this.pathSegs(nv.def.id), {
@@ -752,7 +892,7 @@ export class TreeScene {
       // a level-up sends a pulse of light home to the seed
       gsap.delayedCall(0.12, () => this.startTrace(this.pathSegs(nv.def.id), {
         color, size: 0.55, vmax: 1900, accel: 7000,
-        onDone: () => { const core = this.nodes.get('seed')!; gsap.fromTo(core, { flash: 0.35 * m.flashes }, { flash: 0, duration: 0.5 }); },
+        onDone: () => { gsap.fromTo(this.core, { flash: 0.35 * m.flashes }, { flash: 0, duration: 0.5 }); },
       }));
     }
 
@@ -831,9 +971,11 @@ export class TreeScene {
     const reduced = this.game.state.settings.reducedMotion;
     const tex = textures();
     const wait = (s: number) => new Promise<void>((r) => gsap.delayedCall(s, r));
-    const core = this.nodes.get('seed')!;
+    const core = this.core;
     const lit = [...this.nodes.values()].filter((n) => n.visible);
     const fs = Math.max(0.25, m.flashes);
+    const keystones = this.tree.keystones.filter((k) => isOwned(this.prog.levels, k));
+    const branchColors = this.tree.branches.map((b) => BRANCH_COLORS[b]);
 
     // 1 ─ the lights go out: everything you grew sinks to embers in a near-black void
     this.darkHold = true;
@@ -871,7 +1013,7 @@ export class TreeScene {
       for (const e of this.edges) gsap.to(e, { dim: 0, duration: 0.8 });
       await wait(0.9);
     } else {
-      await Promise.all(KEYSTONES.map((k, j) => new Promise<void>((res) => {
+      await Promise.all(keystones.map((k, j) => new Promise<void>((res) => {
         const ks = this.nodes.get(k)!;
         gsap.delayedCall(j * 0.12, () => {
           relight(ks, j);
@@ -903,7 +1045,7 @@ export class TreeScene {
             const life = 1.3 - k * 0.1; // every wave converges on the seed just as it bursts
             this.fx.emit({
               x: Math.cos(a) * R, y: Math.sin(a) * R, texture: tex.spark, count: 1,
-              color: [0xffe6a8, 0xffffff, pick([BRANCH_COLORS.force, BRANCH_COLORS.reach, BRANCH_COLORS.flow, BRANCH_COLORS.fortune])],
+              color: [this.tree.id === 'crown' ? 0xd8ccff : 0xffe6a8, 0xffffff, pick(branchColors)],
               angle: [a + Math.PI + 0.28, a + Math.PI + 0.32], speed: [R / life, R / life], life: [life, life],
               size: [0.35, 0.5], sizeEnd: 0.6, drag: 0, stretch: 0.0018, alpha: 0.9,
             });
@@ -917,7 +1059,7 @@ export class TreeScene {
     this.game.flash(1, 0.12, 1.8);
     this.game.shake.add(0.9);
     this.shockwave(0, 0, 40, 1.8);
-    this.fx.emit({ x: 0, y: 0, texture: tex.spark, count: 260, color: [0xffffff, 0xffe0a0, BRANCH_COLORS.force, BRANCH_COLORS.reach, BRANCH_COLORS.flow, BRANCH_COLORS.fortune], speed: [300, 1500], life: [0.6, 1.8], size: [0.4, 0.9], drag: 1.6, stretch: 0.0025 });
+    this.fx.emit({ x: 0, y: 0, texture: tex.spark, count: 260, color: [0xffffff, this.tree.id === 'crown' ? 0xe0d6ff : 0xffe0a0, ...branchColors], speed: [300, 1500], life: [0.6, 1.8], size: [0.4, 0.9], drag: 1.6, stretch: 0.0025 });
     this.fx.emit({ x: 0, y: 0, texture: tex.star4, count: 80, color: [0xffffff, 0xffe0a0], speed: [60, 600], life: [1, 2.4], size: [0.3, 0.7], spin: [-3, 3], drag: 1.2 });
     for (let i = 0; i < 4; i++) gsap.delayedCall(i * 0.15, () => this.shockRing(0, 0, 60, 900 + i * 300, pick([0xffffff, 0xffe0a0, 0xfff6dd]), 1.6, 0.8));
     gsap.fromTo(this, { dawnR: 0 }, { dawnR: 4600, duration: 2.8, ease: 'power2.out' });
@@ -1020,7 +1162,7 @@ export class TreeScene {
       if (e.state === 'active' && e.grow >= 1 && amb) {
         e.pulseTimer -= dt;
         if (e.pulseTimer <= 0) {
-          e.pulseTimer = rand(1.4, 3.2) * (this.game.state.awakened ? 0.4 : 1);
+          e.pulseTimer = rand(1.4, 3.2) * (this.prog.awakened ? 0.4 : 1);
           this.spawnPulse(e);
         }
       }
@@ -1062,6 +1204,52 @@ export class TreeScene {
   /** current lumen/prism changed: refresh affordability visuals */
   onWalletChanged() {
     this.sync();
-    this.game.tooltip.refresh(this.game.state);
+    this.game.tooltip.refresh();
+  }
+
+  /** World position of a node on screen (tips point at nodes), or null while it is not shown. */
+  nodeOnScreen(id: string): { x: number; y: number; r: number } | null {
+    const nv = this.nodes.get(id);
+    if (!nv || !nv.visible || !this.view.visible) return null;
+    const p = this.cam.worldToScreen(nv.x, nv.y);
+    return { x: p.x, y: p.y, r: nv.r * this.cam.zoom };
+  }
+
+  // ───────────────────────────────────────────── unweaving
+  private tryUnweave(nv: NodeView) {
+    if (!this.tree.light || nv.def.kind === 'core') return;
+    const res = this.game.unweaveNode(nv.def.id);
+    if (!res.ok) {
+      if (res.reason !== 'fixed') this.deny(nv);
+      return;
+    }
+    this.darken(nv, res);
+  }
+
+  /** A star goes dark: its light collapses inward, the refund runs home to the root. */
+  private darken(nv: NodeView, res: Extract<UnweaveResult, { ok: true }>) {
+    const tex = textures();
+    const reduced = this.game.state.settings.reducedMotion;
+    const { x, y, r, color } = nv;
+    const segs = this.pathSegs(nv.def.id);
+    this.sync();
+    this.showTooltip();
+    audio.deny();
+    gsap.delayedCall(0.12, () => audio.reveal(1));
+    gsap.fromTo(nv, { punch: 1.25 }, { punch: 1, duration: 0.6, ease: 'elastic.out(1, 0.4)' });
+    this.shockRing(x, y, r * 3, r * 0.6, color, 0.5, 0.6);
+    if (!reduced) {
+      // sparks fall inward and go out
+      for (let i = 0; i < 18; i++) {
+        const a = (i / 18) * TAU;
+        const R = r * 3.2;
+        this.fx.emit({ x: x + Math.cos(a) * R, y: y + Math.sin(a) * R, texture: tex.spark, count: 1, color: [color, 0xffffff], angle: [a + Math.PI - 0.05, a + Math.PI + 0.05], speed: [R / 0.4, R / 0.4], life: [0.4, 0.4], size: [0.3, 0.45], sizeEnd: 0, drag: 0, stretch: 0.003 });
+      }
+      this.startTrace(segs, { color: this.tree.id === 'crown' ? 0xd8ccff : 0xffd77a, size: 0.6, vmax: 1700, accel: 6000 });
+    }
+    const parts: string[] = [];
+    if (res.refund.lumen) parts.push(`+${fmt(res.refund.lumen)}`);
+    if (res.refund.prism) parts.push(`+${fmt(res.refund.prism)}◆`);
+    if (parts.length) this.floatText(x, y - r - 18, parts.join('  '), 0xd8e0ff, 17);
   }
 }

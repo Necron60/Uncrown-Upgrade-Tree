@@ -1,15 +1,17 @@
 import { Container, Graphics, Sprite, Text } from 'pixi.js';
 import { TAU, damp, lerpColor, polar } from '../../core/math';
-import { BRANCH_COLORS, KEYSTONES, NODE_MAP, RING_RADII, nodeColor, nodeRadius, type NodeDef, type NodeKind } from '../../data/tree';
+import { BRANCH_COLORS, nodeColor, nodeRadius, type NodeDef, type NodeKind, type TreeDef } from '../../data/tree';
 import { drawIcon } from '../../render/icons';
 import { textures } from '../../render/textures';
 import type { NodeState } from '../../systems/tree-logic';
 
 const DARK = 0x0b0d20;
 const GOLD = 0xffe6a0;
+const CURSE = 0xff2a55;
+const SEAL = 0xff4d6d;
 
 /** Half-length of a grown node's star spikes, in world units. Sized so stars never reach a neighbour (nodes sit ≥160 apart). */
-const STAR_LEN: Record<NodeKind, number> = { core: 150, awaken: 150, keystone: 106, major: 70, synergy: 64, minor: 56 };
+const STAR_LEN: Record<NodeKind, number> = { core: 150, awaken: 150, keystone: 106, major: 70, synergy: 64, curse: 62, minor: 56 };
 
 function shapePoints(def: NodeDef, r: number): number[] | null {
   const pts: number[] = [];
@@ -22,6 +24,14 @@ function shapePoints(def: NodeDef, r: number): number[] | null {
   switch (def.kind) {
     case 'major': ring(6, r, -Math.PI / 2); return pts;
     case 'synergy': ring(4, r * 1.12, -Math.PI / 2); return pts;
+    case 'curse': {
+      // thorned: twelve sharp points
+      for (let i = 0; i < 24; i++) {
+        const a = -Math.PI / 2 + (i / 24) * TAU;
+        pts.push(Math.cos(a) * (i % 2 === 0 ? r * 1.14 : r * 0.84), Math.sin(a) * (i % 2 === 0 ? r * 1.14 : r * 0.84));
+      }
+      return pts;
+    }
     case 'keystone': {
       for (let i = 0; i < 16; i++) {
         const a = -Math.PI / 2 + (i / 16) * TAU;
@@ -91,11 +101,11 @@ export class NodeView {
   private drawn = false;
   awakened = false;
 
-  constructor(def: NodeDef) {
+  constructor(def: NodeDef, readonly tree: TreeDef) {
     this.def = def;
     this.r = nodeRadius(def.kind);
-    this.color = nodeColor(def);
-    const p = polar(RING_RADII[def.ring], def.angle);
+    this.color = def.kind === 'curse' ? lerpColor(nodeColor(def), CURSE, 0.35) : nodeColor(def);
+    const p = polar(tree.rings[def.ring], def.angle);
     this.x = p.x;
     this.y = p.y;
     this.c.position.set(p.x, p.y);
@@ -121,20 +131,20 @@ export class NodeView {
     this.q.resolution = 3;
 
     const isCore = def.kind === 'core';
-    this.flare = new Sprite(isCore || def.kind === 'keystone' ? tex.flare8 : def.kind === 'synergy' ? tex.flare6 : tex.flare4);
+    this.flare = new Sprite(isCore || def.kind === 'keystone' ? tex.flare8 : def.kind === 'synergy' || def.kind === 'curse' ? tex.flare6 : tex.flare4);
     this.flare.anchor.set(0.5);
     this.flare.blendMode = 'add';
     this.flare.visible = false;
     this.starCore = new Sprite(tex.dot);
     this.starCore.anchor.set(0.5);
     this.starCore.blendMode = 'add';
-    this.starCore.tint = isCore ? 0xfff1d0 : 0xffffff;
+    this.starCore.tint = isCore ? (tree.id === 'crown' ? 0xf0eaff : 0xfff1d0) : def.kind === 'curse' ? 0xffd0d8 : 0xffffff;
     this.starCore.visible = false;
     if (isCore || def.kind === 'keystone') {
       this.streak = new Sprite(tex.streakH);
       this.streak.anchor.set(0.5);
       this.streak.blendMode = 'add';
-      this.streak.tint = isCore ? 0xffe0a8 : this.color;
+      this.streak.tint = isCore ? (tree.id === 'crown' ? 0xd8ccff : 0xffe0a8) : this.color;
       this.streak.visible = false;
     }
 
@@ -196,6 +206,7 @@ export class NodeView {
     };
 
     const owned = st === 'owned' || st === 'maxed';
+    const curse = def.kind === 'curse';
     this.q.visible = st === 'silhouette';
     this.stateScale = st === 'silhouette' ? 0.72 : 1;
 
@@ -214,6 +225,24 @@ export class NodeView {
       shape(this.body).fill({ color: DARK, alpha: 0.94 }).stroke({ width: 2, color: lerpColor(color, 0x50587a, 0.65), alpha: 0.7 });
       drawIcon(this.icon, def.icon, r * 0.5, 0x7a82a8, 0.55);
       this.haloBase = 0.05;
+    } else if (st === 'gated') {
+      // beyond a sealed gate: readable, but held behind a ring of the gate's colour
+      shape(this.body).fill({ color: DARK, alpha: 0.94 }).stroke({ width: 1.6, color: lerpColor(color, 0x50587a, 0.6), alpha: 0.6 });
+      drawIcon(this.icon, def.icon, r * 0.5, lerpColor(color, 0x7a82a8, 0.6), 0.5);
+      const rr = r + 8;
+      for (let i = 0; i < 16; i++) {
+        const a0 = (i / 16) * TAU;
+        this.deco.moveTo(Math.cos(a0) * rr, Math.sin(a0) * rr).arc(0, 0, rr, a0, a0 + (TAU / 16) * 0.45);
+      }
+      this.deco.stroke({ width: 1.4, color: this.tree.ringColor, alpha: 0.65 });
+      this.haloBase = 0.04;
+    } else if (st === 'sealed') {
+      // the other side of its fork is lit: dark, struck through
+      shape(this.body).fill({ color: 0x07070f, alpha: 0.9 }).stroke({ width: 1.4, color: lerpColor(color, 0x3a2030, 0.7), alpha: 0.55 });
+      drawIcon(this.icon, def.icon, r * 0.5, 0x5a5470, 0.4);
+      const k = r * 0.72;
+      this.deco.moveTo(-k, k).lineTo(k, -k).stroke({ width: 2, color: SEAL, alpha: 0.55, cap: 'round' });
+      this.haloBase = 0;
     } else if (st === 'available') {
       const a = this.affordable;
       shape(this.body).fill({ color: lerpColor(DARK, color, a ? 0.1 : 0.04), alpha: 0.96 })
@@ -225,8 +254,9 @@ export class NodeView {
       shape(this.body).fill({ color: DARK, alpha: 0.72 }).stroke({ width: 1.4, color: lerpColor(color, 0xffffff, 0.3), alpha: 0.85 });
       drawIcon(this.icon, def.icon, r * 0.5, 0xffffff, 1);
       this.haloBase = st === 'maxed' ? 0.26 : 0.18;
-      this.flare.tint = st === 'maxed' ? lerpColor(color, GOLD, 0.55) : lerpColor(color, 0xffffff, 0.28);
+      this.flare.tint = curse ? lerpColor(color, CURSE, 0.4) : st === 'maxed' ? lerpColor(color, GOLD, 0.55) : lerpColor(color, 0xffffff, 0.28);
     }
+    if (curse && !owned) shape(this.deco, 1.22).stroke({ width: 1, color: CURSE, alpha: 0.28 });
 
     // segmented level ring
     if (def.maxLevel > 1) {
@@ -250,23 +280,29 @@ export class NodeView {
   private drawCore(keystones: Record<string, boolean>) {
     const { r } = this;
     const awakened = this.awakened;
-    const warm = awakened ? 0xfff6dd : 0xffe3a8;
-    this.body.circle(0, 0, r).fill({ color: lerpColor(DARK, 0xffc46b, awakened ? 0.6 : 0.22), alpha: 1 });
-    this.body.circle(0, 0, r * 0.72).fill({ color: lerpColor(DARK, 0xffd48a, awakened ? 0.85 : 0.4), alpha: 1 });
+    // the Bloom's seed is warm gold; the Hollow Crown is cold silver-violet
+    const crown = this.tree.id === 'crown';
+    const pal = crown
+      ? { warm: awakened ? 0xf4f0ff : 0xd8ccff, fillA: 0x9a86ff, fillB: 0xc6b8ff, flare: awakened ? 0xf4f0ff : 0xd6cbff, halo: awakened ? 0xe8e0ff : 0x8f7cff }
+      : { warm: awakened ? 0xfff6dd : 0xffe3a8, fillA: 0xffc46b, fillB: 0xffd48a, flare: awakened ? 0xfff4dc : 0xffdca0, halo: awakened ? 0xfff0d0 : 0xffc06a };
+    const warm = pal.warm;
+    this.body.circle(0, 0, r).fill({ color: lerpColor(DARK, pal.fillA, awakened ? 0.6 : 0.22), alpha: 1 });
+    this.body.circle(0, 0, r * 0.72).fill({ color: lerpColor(DARK, pal.fillB, awakened ? 0.85 : 0.4), alpha: 1 });
     this.body.circle(0, 0, r).stroke({ width: 3, color: warm, alpha: 1 });
     this.body.circle(0, 0, r * 0.72).stroke({ width: 1.5, color: warm, alpha: 0.5 });
-    drawIcon(this.icon, 'seed', r * 0.55, 0xffffff, 1);
+    drawIcon(this.icon, this.def.icon, r * 0.55, 0xffffff, 1);
     this.haloBase = awakened ? 0.5 : this.awakenReady ? 0.45 : 0.34;
-    this.flare.tint = awakened ? 0xfff4dc : 0xffdca0;
-    this.halo.tint = awakened ? 0xfff0d0 : 0xffc06a;
+    this.flare.tint = pal.flare;
+    this.halo.tint = pal.halo;
 
-    // keystone quadrants
+    // one arc per keystone, lit once that keystone is
     const qr = r + 16;
-    KEYSTONES.forEach((k) => {
-      const def = NODE_MAP[k];
+    const half = Math.min(0.62, (Math.PI / this.tree.keystones.length) * 0.78);
+    this.tree.keystones.forEach((k) => {
+      const def = this.tree.map[k];
       const mid = (def.angle * Math.PI) / 180;
-      const a0 = mid - 0.62;
-      const a1 = mid + 0.62;
+      const a0 = mid - half;
+      const a1 = mid + half;
       const on = keystones[k];
       const col = BRANCH_COLORS[def.branch];
       this.quads.moveTo(Math.cos(a0) * qr, Math.sin(a0) * qr).arc(0, 0, qr, a0, a1)

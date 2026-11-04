@@ -1,6 +1,5 @@
 import { Container, Graphics, MeshRope, Point, type RopeGeometry } from 'pixi.js';
 import { DEG, TAU, lerp, lerpColor } from '../../core/math';
-import { RING_RADII } from '../../data/tree';
 import { textures } from '../../render/textures';
 import type { NodeView } from './NodeView';
 
@@ -56,8 +55,8 @@ export class EdgeView {
     this.ropes.visible = false;
     this.view.addChild(this.glow, this.line, this.ropes, this.hl);
 
-    const r0 = RING_RADII[from.def.ring];
-    const r1 = RING_RADII[to.def.ring];
+    const r0 = from.tree.rings[from.def.ring];
+    const r1 = to.tree.rings[to.def.ring];
     let a0 = from.def.angle;
     const a1 = to.def.angle;
     if (r0 === 0) a0 = a1;

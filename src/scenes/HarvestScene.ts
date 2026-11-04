@@ -3,14 +3,37 @@ import { BitmapText, Container, Graphics, Sprite } from 'pixi.js';
 import { TAU, chance, clamp, damp, dist2, lerp, lerpColor, rand } from '../core/math';
 import { fmt } from '../core/format';
 import type { Stats } from '../data/stats';
-import { PRISM_COLOR } from '../data/tree';
+import { PRISM_COLOR, type TreeDef, type TrialDef } from '../data/tree';
+import { trialMet, trialProgress } from '../systems/tree-logic';
 import { Particles } from '../render/particles';
 import { Shake } from '../render/shake';
 import { textures } from '../render/textures';
 import { audio } from '../systems/audio';
 import type { Game } from '../game/Game';
 import type { RunResult } from '../ui/ui';
-import { Shard, type ShardType } from './harvest/Shard';
+import { HAZARDS, Shard, type HazardType, type ShardType } from './harvest/Shard';
+
+/** What a harvest needs to know beyond the stats: whose tree, how deep, what it is trying for. */
+export interface HarvestOpts {
+  tree: TreeDef;
+  /** trials passed: the void grows more hostile with every gate */
+  depth: number;
+  /** the Hollow Heart rises in this harvest */
+  boss: boolean;
+  /** its wounds from earlier harvests, 0..1 */
+  bossWounds?: number;
+  trial: TrialDef | null;
+  /** hazards met before (a first sighting gets a banner) */
+  seen: Set<string>;
+  onSeen?: (kind: string) => void;
+}
+
+const HAZARD_TEXT: Record<HazardType, [string, string]> = {
+  warded: ['Warded', 'every hit strips a ward until it can break'],
+  thief: ['A thief', 'break it before it flees with your gloam'],
+  dimmer: ['A dimmer', 'it dims your lens until it breaks'],
+  skittish: ['Skittish', 'it runs from your lens, worth four times as much'],
+};
 
 interface Mote {
   s: Sprite;
@@ -43,6 +66,8 @@ interface Arc {
   y1: number;
   life: number;
   jitterT: number;
+  /** a strike from the sky: longer, wider, violet */
+  bolt?: boolean;
 }
 
 interface Seeker {
@@ -63,7 +88,22 @@ interface KillInfo {
   depth?: number;
 }
 
+interface HitOpts {
+  canCrit?: boolean;
+  canArc?: boolean;
+  quiet?: boolean;
+  depth?: number;
+  /** a lens hit: can set the shard alight */
+  lens?: boolean;
+  /** lightning (arcs, strikes): doubled by Superconductor */
+  lightning?: boolean;
+  /** damage over time: goes past wards, does not chill or count as a hit */
+  dot?: boolean;
+}
+
 const ARC_RANGE = 240;
+/** share of the Hollow Heart's health each hazard broken while it is up takes */
+const HEART_CRACK = 0.02;
 const NOVA_RANGE = 100;
 
 export class HarvestScene {
@@ -126,6 +166,19 @@ export class HarvestScene {
   private numPool: BitmapText[] = [];
   private arcs: Arc[] = [];
   private hitStop = 0;
+  // the Hollow Crown
+  private hazardKills = 0;
+  private bossKills = 0;
+  private stolen = 0;
+  /** Bloodlust: seconds of frenzy left */
+  private frenzy = 0;
+  private strikeAcc = 0;
+  private dimG = new Graphics();
+  private dimFactor = 1;
+  private trialDone = false;
+  private trialShown = -1;
+  private bossSpawnT = 0;
+  private boss: Shard | null = null;
   /** bright kill flashes scale with the player's flash setting */
   private flashScale = 1;
   /** rises with every flash, decays fast; dense moments get thinner glows so the screen never whites out */
@@ -137,10 +190,10 @@ export class HarvestScene {
 
   onEnd: (r: RunResult) => void = () => {};
 
-  constructor(private game: Game, private st: Stats) {
+  constructor(private game: Game, private st: Stats, private opts: HarvestOpts) {
     const tex = textures();
     this.view.addChild(this.root, this.moteLayer);
-    this.root.addChild(this.shardLayer, this.fx.view, this.arcLayer, this.seekerLayer, this.lensLayer, this.numLayer);
+    this.root.addChild(this.dimG, this.shardLayer, this.fx.view, this.arcLayer, this.seekerLayer, this.lensLayer, this.numLayer);
     this.lensGlow = new Sprite(tex.glow);
     this.lensGlow.anchor.set(0.5);
     this.lensGlow.blendMode = 'add';
@@ -193,7 +246,12 @@ export class HarvestScene {
     });
     const first = Math.min(this.st.maxShards, 6);
     for (let i = 0; i < first; i++) this.after(0.15 + i * 0.07, () => this.spawn());
-    this.game.hhud.showBanner('The Harvest', this.game.state.lifetime.runs === 0 && this.game.state.settings.hints ? 'move your lens over the shards' : '', 'rgba(150,220,255,0.7)');
+    const t = this.opts.trial;
+    const sub = this.game.state.lifetime.runs === 0 && this.game.state.settings.hints ? 'move your lens over the shards'
+      : t ? `trial · ${t.text.toLowerCase()}` : '';
+    this.game.hhud.showBanner('The Harvest', sub, 'rgba(150,220,255,0.7)');
+    this.game.hhud.setTrial(t, 0);
+    if (this.opts.boss) this.bossSpawnT = 2.6;
     // lens materialises in place
     gsap.to(this, { lensIntro: 1, duration: 0.6, ease: 'back.out(2.2)' });
   }
@@ -211,8 +269,18 @@ export class HarvestScene {
     return 0;
   }
 
+  /** The Hollow Crown fights back: a share of shards rise as hazards, more with every gate passed. */
+  private get hazardChance(): number {
+    if (!this.opts.tree.trials) return 0;
+    return Math.min(0.45, (0.05 + 0.025 * this.opts.depth) * this.st.hazardMult);
+  }
+
   private pickType(): ShardType {
     const st = this.st;
+    if (this.hazardChance > 0 && chance(this.hazardChance)) {
+      // a new kind of hazard joins with each gate: wards, then thieves, dimmers, skittish ones
+      return HAZARDS[Math.floor(Math.random() * Math.min(HAZARDS.length, this.opts.depth + 1))];
+    }
     if (st.heart > 0 && this.killsSinceHeart >= 100 && this.remaining > 4 && !this.shards.some((s) => s.type === 'heart' && !s.dead)) {
       this.killsSinceHeart = 0;
       return 'heart';
@@ -228,14 +296,40 @@ export class HarvestScene {
     const alive = this.shards.length;
     if (alive >= Math.round(this.st.maxShards) && !forceType) return;
     const type = forceType ?? this.pickType();
-    const tier = this.pickTier();
+    const tier = type === 'boss' ? 0 : this.pickTier();
     const m = 50;
     const top = 96;
     const px = x ?? rand(m, this.w - m);
     const py = y ?? rand(top, this.h - m);
-    const s = new Shard(tier, type, clamp(px, m, this.w - m), clamp(py, top, this.h - m));
+    const tree = this.opts.tree;
+    let def = type === 'heart' || type === 'boss' ? tree.heart : tree.tiers[tier];
+    // every gate passed deepens the void: tougher, richer crystals
+    if (tree.deepen && type !== 'boss' && this.opts.depth > 0) {
+      def = { ...def, hp: def.hp * tree.deepen.hp ** this.opts.depth, value: def.value * tree.deepen.value ** this.opts.depth };
+    }
+    if (this.st.shardHp !== 1 && type !== 'boss') def = { ...def, hp: def.hp * this.st.shardHp };
+    const s = new Shard(def, tier, type, clamp(px, m, this.w - m), clamp(py, top, this.h - m), {
+      wards: type === 'warded' ? Math.min(7, 3 + this.opts.depth) : 0,
+      fuse: type === 'thief' ? this.st.thiefTime : 0,
+    });
     this.shards.push(s);
     this.shardLayer.addChild(s.c);
+    if (s.hazard && this.st.hellfire > 0) this.ignite(s, 2);
+    if (s.hazard && !this.opts.seen.has(type)) {
+      this.opts.seen.add(type);
+      this.opts.onSeen?.(type);
+      const [name, what] = HAZARD_TEXT[type as HazardType];
+      this.after(0.3, () => this.game.hhud.showBanner(name, what, 'rgba(255,90,120,0.8)'));
+    }
+    if (type === 'boss') {
+      this.boss = s;
+      // it still bears the wounds of earlier harvests
+      const w = this.opts.bossWounds ?? 0;
+      s.hp = s.maxHp * (1 - w);
+      this.game.hhud.showBanner('The Hollow Heart', w > 0.005 ? `it still bears your wounds · ${Math.round(w * 100)}%` : 'break hazards to crack it, then shatter it', 'rgba(255,60,99,0.9)');
+      this.shake.add(0.5);
+      audio.hollow('boss');
+    }
     const tex = textures();
     this.fx.emit({ x: s.x, y: s.y, texture: tex.star4, count: 1, color: 0xffffff, speed: [0, 0], life: [0.35, 0.35], size: [type === 'heart' ? 1.6 : 0.7, 0.7], sizeEnd: 0, spin: [2, 3] });
     this.fx.emit({ x: s.x, y: s.y, texture: tex.dot, count: type === 'heart' ? 30 : 6, color: s.color, speed: [20, 90], life: [0.3, 0.6], size: [0.15, 0.3] });
@@ -253,36 +347,100 @@ export class HarvestScene {
     this.spawnPulseRing(this.lens.x, this.lens.y, R, false);
     const r2 = (s: Shard, x: number, y: number, rr: number) => dist2(s.x, s.y, x, y) < (rr + s.r * 0.65) ** 2;
     const targets = this.shards.filter((s) => !s.dead && s.spawn > 0.3 && r2(s, this.lens.x, this.lens.y, R));
-    for (const s of targets) this.damage(s, dmg, { canCrit: true, canArc: true });
+    for (const s of targets) this.damage(s, dmg, { canCrit: true, canArc: true, lens: true });
     if (this.st.echoPower > 0) {
       const eR = R * 0.85;
       this.spawnPulseRing(this.echo.x, this.echo.y, eR, true);
       const et = this.shards.filter((s) => !s.dead && s.spawn > 0.3 && r2(s, this.echo.x, this.echo.y, eR));
-      for (const s of et) this.damage(s, dmg * this.st.echoPower, { canCrit: true, canArc: false });
+      for (const s of et) this.damage(s, dmg * this.st.echoPower, { canCrit: true, canArc: false, lens: true });
     }
   }
 
-  private damage(s: Shard, amount: number, o: { canCrit?: boolean; canArc?: boolean; quiet?: boolean; depth?: number }) {
+  private damage(s: Shard, amount: number, o: HitOpts) {
     if (s.dead) return;
+    const st = this.st;
+    const tex = textures();
+    // wards turn hits aside: each one strips some, and only then does the shard take damage
+    if (s.wards > 0 && !o.dot) {
+      s.wards = Math.max(0, s.wards - Math.max(1, Math.round(st.wardBreak)));
+      s.flash = 0.6;
+      s.punch = 0.12;
+      this.fx.emit({ x: s.x, y: s.y, texture: tex.spark, count: 4, color: [0xe6ecff, 0xffffff], speed: [160, 320], life: [0.12, 0.25], size: [0.2, 0.32], drag: 4, stretch: 0.004, spread: s.r });
+      if (s.wards === 0) {
+        this.fx.emit({ x: s.x, y: s.y, texture: tex.ring, count: 1, color: 0xe6ecff, speed: [0, 0], life: [0.3, 0.3], size: [(s.r * 2.4) / 256, (s.r * 2.4) / 256], sizeEnd: 2.2, alpha: 0.8 });
+        audio.hollow('wardbreak');
+      } else audio.hollow('ward');
+      return;
+    }
+    let mult = 1;
+    if (s.burn > 0) mult *= 1 + st.burnAmp;
+    if (s.frozen > 0) mult *= st.frozenMult;
+    if (this.frenzy > 0) mult *= 1 + st.bloodlust;
+    if (o.lightning && st.supercon > 0 && (s.chill > 0.05 || s.frozen > 0)) mult *= 2;
+    amount *= mult;
     let crit = false;
-    if (o.canCrit && chance(this.st.critChance)) {
+    if (o.canCrit && chance(st.critChance)) {
       crit = true;
-      amount *= this.st.critMult;
+      amount *= st.critMult;
     }
     s.hp -= amount;
-    s.flash = 1;
-    s.punch = crit ? 0.35 : 0.18;
+    if (!o.dot) {
+      // big crystals take hits all the time: a softer flash keeps them readable
+      s.flash = Math.max(s.flash, s.big ? 0.3 : 1);
+      s.punch = s.big ? Math.max(s.punch, 0.05) : crit ? 0.35 : 0.18;
+    }
     s.hpShow = 1.6;
     if (!o.quiet || crit) this.number(s.x + rand(-6, 6), s.y - s.r - 4, amount, crit);
-    const tex = textures();
-    this.fx.emit({ x: s.x, y: s.y, texture: tex.spark, count: crit ? 7 : 3, color: [s.color, 0xffffff], speed: [120, crit ? 420 : 260], life: [0.15, 0.35], size: [0.2, 0.35], drag: 4, stretch: 0.004, spread: s.r * 0.4 });
+    if (!o.dot) this.fx.emit({ x: s.x, y: s.y, texture: tex.spark, count: crit ? 7 : 3, color: [s.color, 0xffffff], speed: [120, crit ? 420 : 260], life: [0.15, 0.35], size: [0.2, 0.35], drag: 4, stretch: 0.004, spread: s.r * 0.4 });
 
     if (s.hp <= 0) this.kill(s, { crit, depth: o.depth });
-    else if (this.st.execute > 0 && s.type !== 'heart' && s.hp <= s.maxHp * this.st.execute) this.kill(s, { crit, executed: true, depth: o.depth });
+    else if (st.execute > 0 && !s.big && s.hp <= s.maxHp * st.execute) this.kill(s, { crit, executed: true, depth: o.depth });
+    if (s.dead) return;
 
-    if (o.canArc && this.st.arcChance > 0 && chance(this.st.arcChance)) {
-      this.arcFrom(s, this.pulseDamage() * 0.6, Math.round(this.st.arcChains));
+    // what a hit does beyond damage: chill, freeze, fire
+    if (!o.dot) {
+      if (st.chill > 0) s.chill = Math.min(0.85, s.chill + st.chill);
+      if (st.freeze > 0 && s.frozen <= 0 && s.type !== 'boss') {
+        s.frost++;
+        if (s.frost >= Math.max(2, 7 - Math.round(st.freeze))) this.freezeShard(s);
+      }
+      if (o.lens && st.burnChance > 0 && chance(st.burnChance)) this.ignite(s);
     }
+
+    if (o.canArc && st.arcChance > 0 && chance(st.arcChance)) {
+      this.arcFrom(s, this.pulseDamage() * 0.6, Math.round(st.arcChains));
+    }
+  }
+
+  /** Set a shard alight (or keep it burning). */
+  private ignite(s: Shard, lengthMult = 1) {
+    if (s.dead) return;
+    const fresh = s.burn <= 0;
+    s.burn = Math.max(s.burn, this.st.burnTime * lengthMult);
+    if (!fresh) return;
+    const tex = textures();
+    this.fx.emit({ x: s.x, y: s.y, texture: tex.spark, count: 6, color: [0xff7a2e, 0xffd08a], speed: [60, 200], life: [0.2, 0.45], size: [0.25, 0.4], drag: 3, gravity: -160, stretch: 0.003, spread: s.r * 0.5 });
+    if (s.frozen > 0) this.thermalShock(s);
+  }
+
+  private freezeShard(s: Shard) {
+    s.frost = 0;
+    s.frozen = this.st.freezeTime;
+    const tex = textures();
+    this.fx.emit({ x: s.x, y: s.y, texture: tex.frag, count: 8, color: [0xdff4ff, 0xffffff], speed: [40, 160], life: [0.3, 0.6], size: [0.25, 0.45], sizeEnd: 0.2, drag: 3, spin: [-8, 8], spread: s.r * 0.6 });
+    this.fx.emit({ x: s.x, y: s.y, texture: tex.star4, count: 1, color: 0xe8f8ff, speed: [0, 0], life: [0.3, 0.3], size: [0.8, 0.8], sizeEnd: 0, spin: [2, 3] });
+    audio.hollow('freeze');
+    if (s.burn > 0) this.thermalShock(s);
+  }
+
+  /** Thermal Shock: fire meets ice and the crystal cracks. */
+  private thermalShock(s: Shard) {
+    if (this.st.thermal <= 0 || s.dead) return;
+    const tex = textures();
+    this.fx.emit({ x: s.x, y: s.y, texture: tex.ring, count: 1, color: 0xffb8d8, speed: [0, 0], life: [0.35, 0.35], size: [(s.r * 2) / 256, (s.r * 2) / 256], sizeEnd: 3, alpha: 0.8 });
+    this.fx.emit({ x: s.x, y: s.y, texture: tex.dot, count: 14, color: [0xffffff, 0xd8e8ff], speed: [30, 120], life: [0.6, 1.2], size: [0.2, 0.4], drag: 1.5, gravity: -80 });
+    this.floatLabel(s.x, s.y - s.r - 14, 'THERMAL', 0xffc8e0, 13);
+    this.damage(s, this.st.thermal * this.pulseDamage(), { dot: true, canCrit: false });
   }
 
   private arcFrom(origin: Shard, dmg: number, jumps: number) {
@@ -305,17 +463,17 @@ export class HarvestScene {
       this.after(delay, () => {
         if (target.dead) return;
         this.drawArc(from.x, from.y, target.x, target.y);
-        this.damage(target, dmg, { canCrit: true, canArc: false });
+        this.damage(target, dmg, { canCrit: true, canArc: false, lightning: true });
       });
       cur = { x: best.x, y: best.y };
     }
   }
 
-  private drawArc(x0: number, y0: number, x1: number, y1: number) {
+  private drawArc(x0: number, y0: number, x1: number, y1: number, bolt = false) {
     const g = new Graphics();
     g.blendMode = 'add';
     this.arcLayer.addChild(g);
-    const a: Arc = { g, x0, y0, x1, y1, life: 0.22, jitterT: 0 };
+    const a: Arc = { g, x0, y0, x1, y1, life: bolt ? 0.3 : 0.22, jitterT: 0, bolt };
     this.redrawArc(a);
     this.arcs.push(a);
     this.fx.emit({ x: x1, y: y1, texture: textures().spark, count: 6, color: [0xbff4ff, 0xffffff], speed: [100, 300], life: [0.15, 0.3], size: [0.2, 0.35], stretch: 0.004, drag: 4 });
@@ -324,14 +482,14 @@ export class HarvestScene {
   private redrawArc(a: Arc) {
     const g = a.g;
     g.clear();
-    const segs = 9;
     const dx = a.x1 - a.x0, dy = a.y1 - a.y0;
     const len = Math.hypot(dx, dy) || 1;
+    const segs = a.bolt ? Math.max(9, Math.round(len / 40)) : 9;
     const nx = -dy / len, ny = dx / len;
     const pts: number[] = [a.x0, a.y0];
     for (let i = 1; i < segs; i++) {
       const t = i / segs;
-      const off = rand(-1, 1) * Math.min(22, len * 0.12) * Math.sin(t * Math.PI);
+      const off = rand(-1, 1) * Math.min(a.bolt ? 34 : 22, len * 0.12) * Math.sin(t * Math.PI);
       pts.push(lerp(a.x0, a.x1, t) + nx * off, lerp(a.y0, a.y1, t) + ny * off);
     }
     pts.push(a.x1, a.y1);
@@ -340,9 +498,9 @@ export class HarvestScene {
       for (let i = 2; i < pts.length; i += 2) g.lineTo(pts[i], pts[i + 1]);
     };
     path();
-    g.stroke({ width: 10, color: 0x5fd8ff, alpha: 0.22, join: 'round', cap: 'round' });
+    g.stroke({ width: a.bolt ? 16 : 10, color: a.bolt ? 0x9d7dff : 0x5fd8ff, alpha: 0.22, join: 'round', cap: 'round' });
     path();
-    g.stroke({ width: 2.4, color: 0xeaffff, alpha: 1, join: 'round', cap: 'round' });
+    g.stroke({ width: a.bolt ? 3.2 : 2.4, color: a.bolt ? 0xf2ecff : 0xeaffff, alpha: 1, join: 'round', cap: 'round' });
   }
 
   private kill(s: Shard, info: KillInfo) {
@@ -352,6 +510,8 @@ export class HarvestScene {
     this.kills++;
     this.killsSinceHeart++;
     if (s.type === 'heart') this.hearts++;
+    if (s.hazard) this.hazardKills++;
+    if (s.type === 'boss') this.bossKills++;
 
     // combo
     if (st.comboPerKill > 0) {
@@ -368,6 +528,7 @@ export class HarvestScene {
     let typeMult = 1;
     if (s.type === 'gold') typeMult = st.goldValue;
     if (s.type === 'time' && st.goldenHour > 0) typeMult = 3;
+    if (s.hazard) typeMult = s.bonus * st.hazardValue;
     const critBonus = info.crit || info.executed ? 1 + st.critLumen : 1;
     // stochastic rounding: whole numbers on screen, exact expected value
     const raw = s.value * st.lumenMult * st.lumenMultX * typeMult * comboMult * critBonus;
@@ -375,6 +536,12 @@ export class HarvestScene {
     let prism = 0;
     if (s.type === 'prism') prism = Math.round(st.prismMult);
     if (s.type === 'heart') prism = 3 * Math.round(st.prismMult);
+    // the Hollow Crown's sigils come only from what fights back
+    if (s.hazard) prism = Math.floor(st.sigilChance) + (Math.random() < st.sigilChance % 1 ? 1 : 0);
+    if (s.type === 'boss') prism = 20;
+    if (s.type === 'gold' && st.goldSigil > 0 && Math.random() < st.goldSigil) prism += 1;
+    if (s.hazard && st.bloodlust > 0) this.frenzy = 4;
+    if (s.hazard) this.crackHeart(s);
     this.runLumen += lumen;
     this.runPrism += prism;
 
@@ -382,6 +549,7 @@ export class HarvestScene {
     let addTime = 0;
     if (s.type === 'time') addTime = st.timeShardBonus;
     if (s.type === 'gold' && st.goldenHour > 0) addTime = 0.3;
+    if (s.hazard && st.devour > 0) addTime = st.devour;
     addTime *= Math.pow(0.93, this.timeBonuses);
     if (addTime >= 0.05 && !this.inOvertime && !this.ended) {
       this.timeBonuses++;
@@ -392,7 +560,7 @@ export class HarvestScene {
 
     // ── visuals
     const tex = textures();
-    const big = s.type === 'heart';
+    const big = s.big;
     const fragN = big ? 40 : 6 + s.tier * 4;
     const fs = (s.r / 17) * 0.55;
     this.fx.emit({ x: s.x, y: s.y, texture: tex.frag, count: fragN, color: [s.color, 0xffffff, s.color], speed: [90, big ? 700 : 340], life: [0.45, 0.95], size: [fs * 0.5, fs], sizeEnd: 0.2, drag: 2.4, spin: [-14, 14], spread: s.r * 0.5 });
@@ -417,11 +585,20 @@ export class HarvestScene {
     } else if (s.type === 'time') audio.special('time');
     else if (s.type === 'prism') audio.special('prism');
 
+    if (s.hazard) {
+      this.fx.emit({ x: s.x, y: s.y, texture: tex.star4, count: 6, color: [s.color, 0xffffff], speed: [40, 200], life: [0.4, 0.8], size: [0.25, 0.45], spin: [-4, 4], drag: 2 });
+      if (prism > 0) this.floatLabel(s.x, s.y - s.r - 12, `+${prism}◆`, 0xff8aa0, 16);
+    }
     if (big) {
-      if (this.game.motion.slowmo) this.hitStop = 0.14;
-      this.shake.add(0.85);
-      this.game.flash(0.55, 0.05, 0.5);
+      if (this.game.motion.slowmo) this.hitStop = s.type === 'boss' ? 0.3 : 0.14;
+      this.shake.add(s.type === 'boss' ? 1.2 : 0.85);
+      this.game.flash(s.type === 'boss' ? 0.8 : 0.55, 0.05, s.type === 'boss' ? 1 : 0.5, s.type === 'boss' ? '#ffd0da' : undefined);
       audio.special('heart');
+      if (s.type === 'boss') {
+        audio.hollow('boss');
+        this.game.hhud.showBanner('The Hollow Heart breaks', '', 'rgba(255,60,99,0.9)');
+        for (let i = 0; i < 3; i++) this.after(i * 0.12, () => this.fx.emit({ x: s.x, y: s.y, texture: tex.ring, count: 1, color: i === 1 ? 0xffffff : s.color, speed: [0, 0], life: [0.7, 0.7], size: [0.4, 0.4], sizeEnd: 12 + i * 4, alpha: 0.8 }));
+      }
       this.floatLabel(s.x, s.y - 30, `+${fmt(lumen)}`, 0xffd77a, 30);
     } else {
       this.shake.add(0.04 + s.tier * 0.05 + (s.type !== 'normal' ? 0.05 : 0));
@@ -430,6 +607,29 @@ export class HarvestScene {
     audio.shatter(big ? 3 : s.tier);
 
     this.spawnMotes(s, lumen, prism);
+
+    // Wildfire: a burning shard sets up to three of its nearest neighbours alight as it breaks
+    if (s.burn > 0 && st.burnSpread > 0) {
+      const R = 120 + s.r;
+      this.shards.filter((o) => !o.dead && o !== s && dist2(o.x, o.y, s.x, s.y) < (R + o.r) ** 2)
+        .sort((a, b) => dist2(a.x, a.y, s.x, s.y) - dist2(b.x, b.y, s.x, s.y)).slice(0, 3).forEach((o) => this.ignite(o));
+      this.fx.emit({ x: s.x, y: s.y, texture: tex.ring, count: 1, color: 0xff7a2e, speed: [0, 0], life: [0.35, 0.35], size: [0.15, 0.15], sizeEnd: (R * 2) / 256 / 0.15 / 0.9, alpha: 0.5 });
+    }
+    // Shatterfrost: a frozen shard bursts into ice
+    if (s.frozen > 0 && st.frostNova > 0 && (info.depth ?? 0) < 3) {
+      const depth = (info.depth ?? 0) + 1;
+      const x = s.x, y = s.y;
+      const amount = st.frostNova * Math.max(s.maxHp * 0.6, this.pulseDamage() * 3);
+      const R = 110 + s.r;
+      this.after(0.05, () => {
+        this.fx.emit({ x, y, texture: tex.ring, count: 1, color: 0xbfe8ff, speed: [0, 0], life: [0.4, 0.4], size: [0.15, 0.15], sizeEnd: (R * 2) / 256 / 0.15 / 0.9, alpha: 0.7 });
+        this.fx.emit({ x, y, texture: tex.frag, count: 14, color: [0xdff4ff, 0xffffff], speed: [200, 520], life: [0.3, 0.6], size: [0.25, 0.45], sizeEnd: 0.2, drag: 2.5, spin: [-10, 10] });
+        for (const o of this.shards) {
+          if (o.dead || o === s) continue;
+          if (dist2(o.x, o.y, x, y) < (R + o.r) ** 2) this.damage(o, amount, { canCrit: false, quiet: true, depth, dot: true });
+        }
+      });
+    }
 
     // supernova chain reaction
     if (st.novaPower > 0 && (info.depth ?? 0) < 3) {
@@ -565,6 +765,94 @@ export class HarvestScene {
     e.circle(0, 0, eR).fill({ color: 0xc58cff, alpha: 0.04 });
   }
 
+  // ───────────────────────────────────────────── the Hollow Crown
+  /** Lightning from above onto a random shard. */
+  private strike() {
+    const alive = this.shards.filter((s) => !s.dead && s.spawn > 0.5);
+    if (!alive.length) return;
+    const s = alive[Math.floor(Math.random() * alive.length)];
+    const x0 = s.x + rand(-70, 70);
+    this.drawArc(x0, -20, s.x, s.y, true);
+    const tex = textures();
+    this.fx.emit({ x: s.x, y: s.y, texture: tex.glow, count: 1, color: 0xc8b8ff, speed: [0, 0], life: [0.2, 0.2], size: [(s.r * 4) / 128, (s.r * 4) / 128], sizeEnd: 1.6, alpha: 0.6 * this.flashScale });
+    this.shake.add(0.06);
+    audio.hollow('strike');
+    this.damage(s, this.st.strikeDamage * this.pulseDamage(), { canCrit: true, lightning: true });
+    if (this.st.strikeArc > 0 && !s.dead) this.arcFrom(s, this.pulseDamage() * 0.6, Math.max(1, Math.round(this.st.arcChains)));
+  }
+
+  /** Every hazard broken while the Hollow Heart is up cracks it: light runs from the hazard into the heart. */
+  private crackHeart(from: Shard) {
+    const heart = this.shards.find((x) => x.type === 'boss' && !x.dead);
+    if (!heart) return;
+    const tex = textures();
+    const x0 = from.x, y0 = from.y;
+    const g = new Graphics();
+    g.blendMode = 'add';
+    this.arcLayer.addChild(g);
+    const o = { t: 0 };
+    gsap.to(o, {
+      t: 1, duration: 0.28, ease: 'power2.in',
+      onUpdate: () => {
+        if (g.destroyed) return;
+        const x = x0 + (heart.x - x0) * o.t, y = y0 + (heart.y - y0) * o.t;
+        g.clear().moveTo(x0 + (heart.x - x0) * Math.max(0, o.t - 0.35), y0 + (heart.y - y0) * Math.max(0, o.t - 0.35)).lineTo(x, y)
+          .stroke({ width: 6, color: 0xff3d63, alpha: 0.35, cap: 'round' }).moveTo(x0 + (heart.x - x0) * Math.max(0, o.t - 0.2), y0 + (heart.y - y0) * Math.max(0, o.t - 0.2)).lineTo(x, y)
+          .stroke({ width: 2, color: 0xffd0da, alpha: 1, cap: 'round' });
+      },
+      onComplete: () => {
+        g.destroy();
+        if (heart.dead || this.view.destroyed) return;
+        this.fx.emit({ x: heart.x, y: heart.y, texture: tex.frag, count: 10, color: [0xff3d63, 0xffd0da], speed: [120, 380], life: [0.4, 0.8], size: [0.4, 0.7], sizeEnd: 0.2, drag: 2.4, spin: [-10, 10], spread: heart.r * 0.6 });
+        this.shake.add(0.12);
+        this.damage(heart, heart.maxHp * HEART_CRACK, { dot: true });
+        this.floatLabel(heart.x, heart.y - heart.r - 30, 'CRACK', 0xff8aa0, 16);
+      },
+    });
+  }
+
+  /** A thief's fuse ran out: it flees with a share of the harvest. */
+  private flee(s: Shard) {
+    s.dead = true;
+    const take = Math.floor(this.runLumen * this.st.thiefSteal);
+    this.runLumen -= take;
+    this.stolen += take;
+    this.shownLumen = Math.max(0, this.shownLumen - take);
+    this.game.hhud.lumen.set(this.shownLumen, true, 0.3);
+    this.game.hhud.lumenPill.classList.remove('robbed');
+    void this.game.hhud.lumenPill.offsetWidth;
+    this.game.hhud.lumenPill.classList.add('robbed');
+    if (take > 0) this.floatLabel(s.x, s.y - s.r - 12, `-${fmt(take)}`, 0xff5470, 22);
+    audio.hollow('flee');
+    const tex = textures();
+    const tg = this.game.hhud.lumenTarget();
+    const c = s.c;
+    const trail = () => { if (!c.destroyed) this.fx.emit({ x: c.x, y: c.y, texture: tex.dot, count: 2, color: [0xff3355, 0xff9aa8], speed: [0, 30], life: [0.3, 0.6], size: [0.2, 0.35], drag: 2 }); };
+    gsap.to(c, {
+      x: tg.x, y: tg.y - 60, alpha: 0, duration: 0.6, ease: 'power2.in', onUpdate: trail,
+      onComplete: () => { if (!this.view.destroyed) this.shardLayer.removeChild(c); s.destroy(); },
+    });
+    gsap.to(c.scale, { x: 0.4, y: 0.4, duration: 0.6, ease: 'power2.in' });
+  }
+
+  /** The trial for this harvest: progress on the HUD, a banner the moment it is met. */
+  private checkTrial() {
+    const t = this.opts.trial;
+    if (!t || this.trialDone) return;
+    const r = { lumen: this.runLumen, kills: this.kills, hazards: this.hazardKills, boss: this.bossKills };
+    const v = Math.floor(trialProgress(t, r));
+    if (v !== this.trialShown) {
+      this.trialShown = v;
+      this.game.hhud.setTrial(t, v);
+    }
+    if (trialMet(t, r)) {
+      this.trialDone = true;
+      this.game.hhud.trialPassed(t);
+      audio.hollow('trial');
+      this.game.flash(0.25, 0.05, 0.6, '#d8ccff');
+    }
+  }
+
   // ───────────────────────────────────────────── seeker motes
   /** Prefer shards the lens isn't covering and that no other mote is already chasing. */
   private pickSeekerTarget(m: Seeker): Shard | null {
@@ -664,7 +952,7 @@ export class HarvestScene {
     const L = this.lens;
     L.x = damp(L.x, L.px, 28, realDt);
     L.y = damp(L.y, L.py, 28, realDt);
-    L.R = st.radius * (1 + st.radiusGrowth * this.elapsed);
+    L.R = st.radius * (1 + st.radiusGrowth * this.elapsed) * this.dimFactor;
     this.echo.x = damp(this.echo.x, L.x, 3.2, dt);
     this.echo.y = damp(this.echo.y, L.y, 3.2, dt);
     this.drawLens();
@@ -679,7 +967,6 @@ export class HarvestScene {
     this.lensTicks.rotation += dt * 0.6;
     this.lensGlow.position.set(L.x, L.y);
     this.lensGlow.alpha = (0.16 + this.lensPulse * 0.2 + (this.inOvertime ? 0.15 : 0)) * li;
-    this.lensGlow.tint = this.inOvertime ? 0xffb36b : 0x9fe8ff;
     this.echoG.position.set(this.echo.x, this.echo.y);
     this.echoG.rotation -= dt * 0.8;
 
@@ -690,7 +977,7 @@ export class HarvestScene {
         this.game.hhud.setTimer(this.overtimeLeft, st.overtime, true);
         if (this.overtimeLeft <= 0) this.end();
       } else {
-        this.remaining -= dt;
+        this.remaining -= dt * st.timeDrain;
         this.game.hhud.setTimer(this.remaining, Math.max(st.duration, this.remaining), false);
         if (this.remaining <= 0) {
           if (st.overtime > 0 && !this.overtimeUsed) {
@@ -722,6 +1009,22 @@ export class HarvestScene {
         this.pulse();
       }
 
+      // lightning from above
+      if (st.strikeRate > 0) {
+        this.strikeAcc += st.strikeRate * dt;
+        let g2 = 0;
+        while (this.strikeAcc >= 1 && g2++ < 4) {
+          this.strikeAcc -= 1;
+          this.strike();
+        }
+      }
+      if (this.bossSpawnT > 0) {
+        this.bossSpawnT -= dt;
+        if (this.bossSpawnT <= 0) this.spawn(this.w / 2, this.h * 0.42, 'boss');
+      }
+      this.frenzy = Math.max(0, this.frenzy - dt);
+      this.checkTrial();
+
       // combo decay
       if (this.combo > 0) {
         this.comboTimer -= dt;
@@ -745,9 +1048,42 @@ export class HarvestScene {
 
     // shards
     const grav = st.gravity;
+    let dimmers = 0;
+    const dim = this.dimG;
+    dim.clear();
     for (const s of this.shards) {
       if (s.dead) continue;
-      if (grav > 0 && !this.ended) {
+      if (!this.ended) this.tickShard(s, dt);
+      if (s.dead) continue;
+      if (s.type === 'dimmer') {
+        dimmers++;
+        // a thread of darkness to the lens it is dimming
+        dim.moveTo(s.x, s.y).lineTo(L.x, L.y).stroke({ width: 6, color: 0x2a1460, alpha: 0.18 }).moveTo(s.x, s.y).lineTo(L.x, L.y).stroke({ width: 1.2, color: 0x9a7aff, alpha: 0.35 });
+      }
+      if (s.type === 'skittish' && !this.ended && s.frozen <= 0) {
+        // runs from the lens
+        const dx = s.x - L.x, dy = s.y - L.y;
+        const d = Math.hypot(dx, dy) || 1;
+        if (d < 300) {
+          const acc = 1100 * (1 - d / 300);
+          s.vx += (dx / d) * acc * dt;
+          s.vy += (dy / d) * acc * dt;
+        }
+        const sp = Math.hypot(s.vx, s.vy);
+        if (sp > 280) { s.vx *= 280 / sp; s.vy *= 280 / sp; }
+        s.vx *= Math.exp(-0.6 * dt);
+        s.vy *= Math.exp(-0.6 * dt);
+      }
+      if (s.type === 'boss' && !this.ended) {
+        // the heart drifts and calls warded shards up around it
+        s.vx += (this.w / 2 - s.x) * 0.02 * dt;
+        s.vy += (this.h * 0.45 - s.y) * 0.02 * dt;
+        if (Math.random() < dt / 3.2) {
+          const a = rand(0, TAU);
+          this.spawn(s.x + Math.cos(a) * (s.r + 60), s.y + Math.sin(a) * (s.r + 60), 'warded');
+        }
+      }
+      if (grav > 0 && !this.ended && s.type !== 'boss') {
         const dx = L.x - s.x, dy = L.y - s.y;
         const d = Math.hypot(dx, dy) || 1;
         const acc = (grav * 70) / (1 + d / 260);
@@ -757,8 +1093,9 @@ export class HarvestScene {
         s.vx *= k;
         s.vy *= k;
       }
-      s.x += s.vx * dt;
-      s.y += s.vy * dt;
+      const move = s.frozen > 0 ? 0 : 1 - s.chill;
+      s.x += s.vx * dt * move;
+      s.y += s.vy * dt * move;
       if (s.x < s.r) { s.x = s.r; s.vx = Math.abs(s.vx); }
       if (s.x > this.w - s.r) { s.x = this.w - s.r; s.vx = -Math.abs(s.vx); }
       if (s.y < 80 + s.r) { s.y = 80 + s.r; s.vy = Math.abs(s.vy); }
@@ -769,6 +1106,9 @@ export class HarvestScene {
       }
     }
     this.shards = this.shards.filter((s) => !s.dead);
+    const df = Math.max(0.45, Math.pow(0.78, dimmers));
+    this.dimFactor += (df - this.dimFactor) * Math.min(1, dt * 5);
+    this.lensGlow.tint = this.inOvertime ? 0xffb36b : dimmers ? 0x8a6cff : 0x9fe8ff;
 
     // pulse rings
     for (let i = this.pulseRings.length - 1; i >= 0; i--) {
@@ -864,6 +1204,31 @@ export class HarvestScene {
     this.game.hhud.setKills(this.kills);
   }
 
+  /** Fire, frost and fuses, once per frame per shard. */
+  private tickShard(s: Shard, dt: number) {
+    const st = this.st;
+    if (s.frozen > 0) s.frozen = Math.max(0, s.frozen - dt);
+    if (s.chill > 0) s.chill = Math.max(0, s.chill - dt * 0.3);
+    if (s.burn > 0) {
+      s.burnAcc += st.burnDps * this.pulseDamage() * dt;
+      s.burn -= dt;
+      s.burnTick -= dt;
+      if (Math.random() < dt * 9) {
+        this.fx.emit({ x: s.x + rand(-s.r, s.r) * 0.6, y: s.y + rand(-s.r, s.r) * 0.4, texture: textures().dot, count: 1, color: [0xff7a2e, 0xffc070, 0xff4d1f], speed: [10, 40], angle: [-Math.PI / 2 - 0.4, -Math.PI / 2 + 0.4], life: [0.35, 0.7], size: [0.14, 0.26], gravity: -90, drag: 1 });
+      }
+      if (s.burnTick <= 0 || s.burn <= 0) {
+        s.burnTick = 0.3;
+        const amt = s.burnAcc;
+        s.burnAcc = 0;
+        if (amt > 0) this.damage(s, amt, { dot: true, quiet: true });
+      }
+    }
+    if (s.type === 'thief' && s.spawn >= 1) {
+      s.fuse -= dt;
+      if (s.fuse <= 0 && !s.dead) this.flee(s);
+    }
+  }
+
   private end() {
     if (this.ended) return;
     this.ended = true;
@@ -882,6 +1247,13 @@ export class HarvestScene {
     gsap.to(this, { lensIntro: 0, duration: 0.5, delay: 0.3, ease: 'back.in(2)' });
     for (const m of this.seekers) gsap.to([m.glow, m.core], { alpha: 0, duration: 0.4 });
     gsap.delayedCall(1.0, () => { if (!this.view.destroyed) this.finish(); });
+  }
+
+  /** How far the Hollow Heart has been broken, counting earlier harvests (null if it never rose). */
+  private bossWounds(): number | null {
+    if (this.bossKills) return 1;
+    const b = this.boss;
+    return b ? 1 - Math.max(0, b.hp) / b.maxHp : this.opts.boss ? this.opts.bossWounds ?? 0 : null;
   }
 
   /** player bailed out early (Esc) */
@@ -906,6 +1278,11 @@ export class HarvestScene {
       bestCombo: this.bestCombo,
       duration: this.elapsed,
       hearts: this.hearts,
+      hazards: this.hazardKills,
+      boss: this.bossKills,
+      bossWounds: this.bossWounds(),
+      stolen: this.stolen,
+      trial: this.trialDone,
     });
   }
 

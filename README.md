@@ -2,7 +2,20 @@
 
 A browser upgrade-tree game that puts animation, light and game feel first.
 
-You are a seed of light in the void. **Harvest** in short runs where your lens shatters crystal shards for Lumen, then spend it in the **Bloom**, a radial constellation of 44 upgrades that grows out from the seed. Buy all four keystones and **Awaken the Seed** to finish.
+You are a seed of light in the void. **Harvest** in short runs where your lens shatters crystal shards for Lumen, then spend it in the **Bloom**, a radial constellation of 44 upgrades that grows out from the seed. Buy all four keystones and **Awaken the Seed**.
+
+The two trees:
+
+1. **The Bloom** is the tutorial, about 40 minutes. It introduces one idea at a time (levels, mechanics, synergies, Prism, keystones), with a first-time tip when each one appears.
+2. **The Hollow Crown** opens after the awakening and is the real game: a harder tree of 66 stars that takes a few hours. It has six branches with a playstyle each (Ember burns, Frost freezes, Storm calls lightning, Tide bends time, Gild hoards, Hollow feeds on hazards), its own currencies (Gloam and Sigils), and a fresh start. On top of that:
+   - **Limited light:** every lit star uses light, so a build is a choice. Right-click (or hold) a star to *unweave* it for 75% back.
+   - **Forks:** the fourth ring of every branch is an either/or.
+   - **Trials:** rings 2 to 5 stay sealed until a harvest meets their gate's challenge. Every gate deepens the void, so shards get tougher and richer.
+   - **Hazards:** warded, thief, dimmer and skittish shards fight back. They are the only source of Sigils.
+   - **Curses:** six strong stars that come with a drawback and burn no light.
+   - **The Hollow Heart:** a boss that rises once every ring is open. Its wounds stay from one harvest to the next. Break it, then **Uncrown**.
+
+Switch between the trees from the tree name at the top of the screen.
 
 The research and design rationale is in [PLAN.md](PLAN.md).
 
@@ -22,6 +35,8 @@ npm run typecheck
 |---|---|---|
 | Bloom | drag · wheel · pinch | pan · zoom toward the cursor · zoom |
 | Bloom | click a glowing node | grow it (touch: tap to preview, tap again to buy) |
+| Hollow Crown | right-click a lit star (touch: hold it) | unweave it: it goes dark, 75% of its price and its light come back |
+| either tree | click the tree's name at the top | your trees: travel between the Bloom and the Hollow Crown |
 | Bloom | click the seed / `Space` | begin a Harvest |
 | Bloom | `C` · double-click empty space · `M` | recenter · recenter · mute |
 | Harvest | move the mouse | steer the lens; it pulses automatically |
@@ -96,23 +111,27 @@ The project is linked as `uncrown` (`.vercel/`). Set the variables in [.env.exam
 ## Project layout
 
 ```
-src/data/tree.ts          the 46 node definitions (polar layout, costs, modifiers)
+src/data/tree.ts          node and tree types, branch colours, light costs
+src/data/trees/bloom.ts   Tree I, the Bloom: 46 nodes (polar layout, costs, modifiers)
+src/data/trees/crown.ts   Tree II, the Hollow Crown: 68 nodes, trials, shard tiers, light
 src/data/stats.ts         stat model + computeStats()
-src/systems/tree-logic.ts unlock/visibility/cost rules (pure, unit-tested)
-src/scenes/TreeScene.ts   the Bloom: camera, nodes, branches, purchase/reveal choreography
-src/scenes/HarvestScene.ts the run: lens, shards, satellites, arcs, novas, motes
+src/systems/tree-logic.ts unlock/visibility/cost/light/fork/gate/unweave rules (pure, unit-tested)
+src/scenes/TreeScene.ts   one tree on screen: camera, nodes, branches, gates, purchase/reveal choreography
+src/scenes/HarvestScene.ts the run: lens, shards, hazards, fire, frost, lightning, the Hollow Heart, motes
 src/render/               generated textures, particle system, starfield, icons, shake
-src/ui/                   HUD, tooltip, summary, settings, ending
+src/ui/                   HUD, tooltip, summary, settings, tree picker, ending, tips
 src/core/cloud.ts         Discord account + cloud save mirror (client side)
 api/                      Vercel functions: Discord login, session, save proxy
 server/                   the save service and its systemd unit, for the VPS
-tests/balance.test.ts     headless playthrough sim (SIMALL=1 prints every run)
+tests/balance.test.ts     headless playthrough sim of the Bloom (SIMALL=1 prints every run)
+tests/crown-sim.ts        pacing model of the Hollow Crown (hazards, light, trials, the Hollow Heart)
+tests/crown-balance.test.ts plays every pair of its branches through, both sides of every fork
 tests/cloud.test.mjs      login cookie + save service checks
 ```
 
 ## Dev URL flags
 
-`?fresh` wipes the save · `?dev` adds currency (`L` adds more) · `?ownall` owns every node · `?lowfx` turns bloom off · `?dtcap=0.2` lets slow machines run in real time
+`?fresh` wipes the save · `?dev` adds currency (`L` adds more) · `?ownall` owns every node of the tree on screen · `?crown` opens the Hollow Crown · `?trials` passes its trials · `?bootdemo` slows the loading screen down · `?lowfx` turns bloom off · `?dtcap=0.2` lets slow machines run in real time
 
 ## License
 
