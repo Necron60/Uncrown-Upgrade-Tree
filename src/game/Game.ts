@@ -233,6 +233,7 @@ export class Game {
     }
     this.syncHud(false);
     this.tips.bind(() => ({
+      active: this.mode === 'tree',
       state: this.state, tree: this.def, p: this.prog,
       nodeAt: (id) => this.tree.nodeOnScreen(id),
       el: { light: this.hud.lightPill, prism: this.hud.prismPill, trial: this.hud.trial, awaken: this.hud.awakenBtn, harvest: this.hud.harvestBtn, chip: this.hud.chip },

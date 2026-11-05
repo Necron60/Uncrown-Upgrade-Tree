@@ -6,6 +6,8 @@ import { h, touchFirst } from './ui';
 
 /** What tips can see of the game. */
 export interface TipContext {
+  /** the player is in the tree, free to read: tips wait out harvests, transitions and the finale */
+  active: boolean;
   state: GameState;
   tree: TreeDef;
   p: TreeProgress;
@@ -185,9 +187,10 @@ export class Tips {
     if (!this.enabled || !this.ctx) return;
     const c = this.ctx();
     if (this.current) {
-      if (this.current.tree !== c.tree.id || !this.current.when(c)) this.hide();
+      if (!c.active || this.current.tree !== c.tree.id || !this.current.when(c)) this.hide();
       return;
     }
+    if (!c.active) return;
     const tip = TIPS.find((t) => t.tree === c.tree.id && !c.state.tips.includes(t.id) && t.when(c));
     if (!tip) return;
     const anchor = tip.at(c);
@@ -219,7 +222,9 @@ export class Tips {
 
   /** Follow what the tip points at (nodes move with the camera). */
   update() {
-    if (this.current) this.place();
+    if (!this.current) return;
+    if (!this.ctx().active) { this.hide(); return; }
+    this.place();
   }
 
   private place() {
