@@ -362,6 +362,48 @@ class Audio {
     });
   }
 
+  /** The Hollow Crown's harvest: wards, lightning, frost, a thief getting away, the Hollow Heart, a trial passed. */
+  hollow(kind: 'ward' | 'wardbreak' | 'strike' | 'freeze' | 'flee' | 'boss' | 'trial') {
+    switch (kind) {
+      case 'ward':
+        if (!this.gate('ward', 0.07)) return;
+        this.note(BELLS, noteHz(14), { gain: 0.035, dur: 0.25 });
+        return;
+      case 'wardbreak':
+        if (!this.gate('wardbreak', 0.08) || !this.breakSlot()) return;
+        this.note(BELLS, noteHz(12), { gain: 0.08, dur: 0.6, verb: 0.4 });
+        this.play(pick('pop_', 4), { gain: 0.12, rate: 1.4 });
+        return;
+      case 'strike':
+        if (!this.gate('strike', 0.12)) return;
+        this.play('drum_soft', { gain: 0.16, rate: rnd(1.3, 1.6), verb: 0.5 });
+        this.note(CHIME, noteHz(rnd(11, 13) | 0), { gain: 0.04, dur: 0.4, verb: 0.6 });
+        return;
+      case 'freeze':
+        if (!this.gate('freeze', 0.1)) return;
+        this.on('gems', () => this.note(CHIME, noteHz(13), { gain: 0.06, dur: 0.5, verb: 0.7 }));
+        return;
+      case 'flee':
+        this.on('gems', () => {
+          this.play('marktree_down', { gain: 0.22, rate: 1.2, verb: 0.4 });
+          this.note(MARIMBA, 220, { gain: 0.2, dur: 0.5, delay: 0.05 });
+        });
+        return;
+      case 'boss':
+        this.on('gems', () => {
+          this.play('gong_loud', { gain: 0.4, rate: 0.8, verb: 1 });
+          this.play('vibes_bowed_a2', { gain: 0.25, rate: 0.5, attack: 0.3, dur: 3 });
+        });
+        return;
+      case 'trial':
+        this.on('ui', () => {
+          [0, 4, 7, 12].forEach((d, i) => this.note(CHIME, noteHz(d, 261.63), { gain: 0.14, verb: 1, delay: i * 0.09 }));
+          this.play('tubular_c4', { gain: 0.3, verb: 1 });
+        });
+        return;
+    }
+  }
+
   awaken() {
     this.on('ui', () => {
       const chord = [0, 2, 4, 5, 7, 9, 10, 12];

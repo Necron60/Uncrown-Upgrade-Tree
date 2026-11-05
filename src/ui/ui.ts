@@ -1,13 +1,17 @@
 import gsap from 'gsap';
 import { fmt, fmtTime } from '../core/format';
 import { hexToCss } from '../core/math';
-import { GRAPHICS_PRESETS, type GameState, type Settings } from '../core/state';
+import { GRAPHICS_PRESETS, progressOf, type GameState, type Settings, type TreeProgress } from '../core/state';
 import { cloud, type CloudStatus } from '../core/cloud';
 import {
-  BRANCH_COLORS, BRANCH_NAMES, KEYSTONES, KIND_NAMES, NODE_MAP, NODES, PRISM_COLOR, nodeColor, type NodeDef,
+  BRANCH_COLORS, BRANCH_NAMES, KIND_NAMES, PRISM_COLOR, lightCost, nodeColor, type NodeDef, type TreeDef, type TreeId, type TrialDef,
 } from '../data/tree';
+import { TREES, TREE_ORDER } from '../data/trees';
 import { STAT_META, formatStat, type StatKey } from '../data/stats';
-import { canAfford, isOwned, level, nextCost, nodeState, statsFor } from '../systems/tree-logic';
+import {
+  checkBuy, countable, currentTrial, forkSiblings, gateOf, isOwned, level, lightCap, lightUsed, needed, nextCost,
+  nodeState, ownedCount, refundOf, sealedBy, statsFor, unweaveBlock,
+} from '../systems/tree-logic';
 
 export function h<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', html = ''): HTMLElementTagNameMap[K] {
   const el = document.createElement(tag);
@@ -22,6 +26,8 @@ const GLYPH = {
   // a four-point star of light (deliberately unlike the round recenter icon)
   lumen: `<i class="glyph">${SVG('<path d="M10 1.2C10.7 6.6 13.4 9.3 18.8 10 13.4 10.7 10.7 13.4 10 18.8 9.3 13.4 6.6 10.7 1.2 10 6.6 9.3 9.3 6.6 10 1.2Z" fill="currentColor" fill-opacity=".28"/>')}</i>`,
   prism: `<i class="glyph prism">${SVG('<path d="M10 2.2 17.2 10 10 17.8 2.8 10Z"/><path d="M2.8 10h14.4M10 2.2v15.6" opacity=".45"/>')}</i>`,
+  // limited light (the Hollow Crown): a small sun
+  light: `<i class="glyph light">${SVG('<circle cx="10" cy="10" r="3.4" fill="currentColor" fill-opacity=".35"/><path d="M10 1.8v3.2M10 15v3.2M1.8 10h3.2M15 10h3.2M4.2 4.2l2.2 2.2M13.6 13.6l2.2 2.2M4.2 15.8l2.2-2.2M13.6 6.4l2.2-2.2"/>')}</i>`,
 };
 const ICON = {
   center: SVG('<circle cx="10" cy="10" r="6"/><circle cx="10" cy="10" r="1.2" fill="currentColor" stroke="none"/><path d="M10 1v3.4M10 15.6V19M1 10h3.4M15.6 10H19"/>'),
@@ -83,8 +89,17 @@ export function colorOf(def: NodeDef): string {
 
 function readout(cls: string, glyph: string, label: string) {
   const el = h('div', `readout ${cls}`, `${glyph}<span class="val">0</span><span class="lbl">${label}</span>`);
-  return { el, val: el.querySelector('.val') as HTMLElement, glyph: el.querySelector('.glyph') as HTMLElement };
+  return { el, val: el.querySelector('.val') as HTMLElement, glyph: el.querySelector('.glyph') as HTMLElement, lbl: el.querySelector('.lbl') as HTMLElement };
 }
+
+/** Is this a touch-first device (no hover, no right-click)? */
+export const touchFirst = () => window.matchMedia?.('(hover: none)').matches ?? false;
+
+/** The finale's name on its button, per tree. */
+export const FINALE_LABEL: Record<TreeId, string> = { bloom: 'Awaken the Seed', crown: 'Uncrown' };
+
+const curName = (tree: TreeDef, c: 'lumen' | 'prism') => tree.currency[c].name;
+const cap1 = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
 
 // ───────────────────────────────────────────────────────────────────────────
 export class TreeHud {
@@ -92,24 +107,37 @@ export class TreeHud {
   readonly lumen: Counter;
   readonly prism: Counter;
   readonly lumenPill: HTMLElement;
-  private prismPill: HTMLElement;
+  readonly prismPill: HTMLElement;
+  readonly lightPill: HTMLElement;
+  private lumenLbl: HTMLElement;
+  private prismLbl: HTMLElement;
+  private lightVal: HTMLElement;
+  private lightShown = '';
   readonly harvestBtn: HTMLButtonElement;
   readonly awakenBtn: HTMLButtonElement;
   readonly settingsBtn: HTMLButtonElement;
   readonly accountBtn: HTMLButtonElement;
   readonly centerBtn: HTMLButtonElement;
   readonly muteBtn: HTMLButtonElement;
+  /** the tree's name and progress; opens the tree picker once there is more than one tree */
+  readonly chip: HTMLButtonElement;
+  /** the next trial (the Hollow Crown) */
+  readonly trial: HTMLElement;
   private hint: HTMLElement;
-  private chip: HTMLElement;
   private toasts: HTMLElement;
 
   constructor(host: HTMLElement) {
     const tl = h('div', 'hud-tl');
     const L = readout('lumen', GLYPH.lumen, 'lumen');
     const P = readout('prism', GLYPH.prism, 'prism');
+    const LT = readout('light', GLYPH.light, 'light');
     this.lumenPill = L.el;
     this.prismPill = P.el;
-    tl.append(L.el, P.el);
+    this.lightPill = LT.el;
+    this.lumenLbl = L.lbl;
+    this.prismLbl = P.lbl;
+    this.lightVal = LT.val;
+    tl.append(L.el, P.el, LT.el);
     this.lumen = new Counter(L.val);
     this.prism = new Counter(P.val);
 
@@ -127,15 +155,16 @@ export class TreeHud {
     this.accountBtn.classList.add('account-btn');
     tr.append(this.accountBtn, this.centerBtn, this.muteBtn, this.settingsBtn);
 
-    this.chip = h('div', 'chip');
+    this.chip = h('button', 'chip');
 
     const bottom = h('div', 'hud-bottom');
     const row = h('div', 'hud-row');
     this.harvestBtn = h('button', 'rite', '<span class="shine">Begin the Harvest</span><kbd>space</kbd>');
     this.awakenBtn = h('button', 'rite awaken');
     this.hint = h('div', 'hint');
+    this.trial = h('div', 'trial');
     row.append(this.harvestBtn, this.awakenBtn);
-    bottom.append(row, this.hint);
+    bottom.append(this.trial, row, this.hint);
 
     this.toasts = h('div', 'toasts');
     this.root.append(tl, tr, this.chip, bottom, this.toasts);
@@ -143,7 +172,7 @@ export class TreeHud {
 
     // the light under the cursor on buttons and dialogs reads these (percentages, so UI zoom does not matter)
     document.addEventListener('pointermove', (e) => {
-      const el = (e.target as Element).closest?.<HTMLElement>('.text-btn, .icon-btn, .rite, .modal');
+      const el = (e.target as Element).closest?.<HTMLElement>('.text-btn, .icon-btn, .rite, .modal, .tree-card');
       if (!el) return;
       const r = el.getBoundingClientRect();
       el.style.setProperty('--mx', `${((e.clientX - r.left) / r.width) * 100}%`);
@@ -170,28 +199,59 @@ export class TreeHud {
     this.hint.style.display = on ? '' : 'none';
   }
 
-  sync(state: GameState, animate = true, urge = false) {
-    this.lumen.set(state.lumen, animate);
-    this.prism.set(state.prism, animate);
-    const showPrism = state.prism > 0 || (state.levels.fortune_4a ?? 0) > 0;
+  /** canPick: more than one tree is open, so the chip opens the tree picker */
+  sync(state: GameState, tree: TreeDef, animate = true, urge = false, canPick = false) {
+    const p = progressOf(state, tree.id);
+    this.lumen.set(p.lumen, animate);
+    this.prism.set(p.prism, animate);
+    this.lumenLbl.textContent = curName(tree, 'lumen');
+    this.prismLbl.textContent = curName(tree, 'prism');
+    const showPrism = !!tree.trials || p.prism > 0 || (p.levels.fortune_4a ?? 0) > 0;
     this.prismPill.classList.toggle('on', showPrism);
     this.harvestBtn.classList.toggle('urge', urge);
 
-    const owned = NODES.filter((n) => n.kind !== 'core' && n.kind !== 'awaken' && isOwned(state.levels, n.id)).length;
-    const total = NODES.filter((n) => n.kind !== 'core' && n.kind !== 'awaken').length;
-    const dots = KEYSTONES.map((k) => {
-      const c = hexToCss(BRANCH_COLORS[NODE_MAP[k].branch]);
-      return `<i class="${isOwned(state.levels, k) ? 'on' : ''}" style="color:${c}"></i>`;
+    // light: used of the cap, full is a warning
+    this.lightPill.classList.toggle('on', !!tree.light);
+    if (tree.light) {
+      const used = lightUsed(tree, p.levels), cap = lightCap(tree, p);
+      const txt = `${Math.max(0, cap - used)}<i> / ${cap}</i>`;
+      if (txt !== this.lightShown) {
+        if (this.lightShown && animate) gsap.fromTo(this.lightVal, { scale: 1.15 }, { scale: 1, duration: 0.35, ease: 'back.out(3)' });
+        this.lightShown = txt;
+        this.lightVal.innerHTML = txt;
+      }
+      this.lightPill.classList.toggle('full', used >= cap);
+      this.lightPill.title = `${Math.max(0, cap - used)} of ${cap} light free. Lighting a star uses some; unweaving it gives it back.`;
+    }
+
+    const total = countable(tree).length;
+    const owned = ownedCount(tree, p.levels);
+    const dots = tree.keystones.map((k) => {
+      const c = hexToCss(BRANCH_COLORS[tree.map[k].branch]);
+      return `<i class="${isOwned(p.levels, k) ? 'on' : ''}" style="color:${c}"></i>`;
     }).join('');
-    this.chip.innerHTML = `<span>the Bloom</span><span class="num">${String(owned).padStart(2, '0')}<i> / </i>${total}</span><span class="ks" title="Keystones">${dots}</span>`;
+    this.chip.classList.toggle('pick', canPick);
+    this.chip.title = canPick ? 'Your trees' : '';
+    this.chip.innerHTML = `<span>${tree.name.replace(/^The /, 'the ')}</span><span class="num">${String(owned).padStart(2, '0')}<i> / </i>${total}</span><span class="ks" title="Keystones">${dots}</span>${canPick ? '<span class="caret"></span>' : ''}`;
 
-    const aw = NODE_MAP.awaken;
-    const awOn = nodeState(aw, state.levels) === 'available' && !state.awakened;
+    const aw = tree.map[tree.finale];
+    const awOn = nodeState(tree, aw, p) === 'available' && !p.awakened;
     this.awakenBtn.classList.toggle('on', awOn);
-    if (awOn) this.awakenBtn.innerHTML = `<span class="shine">Awaken the Seed</span> <span class="cost">${costHtml(nextCost(aw, state.levels), state)}</span>`;
+    if (awOn) this.awakenBtn.innerHTML = `<span class="shine">${FINALE_LABEL[tree.id]}</span> <span class="cost">${costHtml(nextCost(aw, p.levels), p)}</span>`;
 
-    if (state.lifetime.runs === 0) this.hint.innerHTML = 'Touch the <b>seed</b> to begin your first harvest';
+    // the next trial, and the best a harvest has come so far
+    const t = currentTrial(tree, p);
+    this.trial.classList.toggle('on', !!t && owned > 0);
+    if (t) {
+      const best = p.trialBest[t.id] ?? 0;
+      const bestTxt = best > 0 && t.goal.kind !== 'boss' ? `<span class="best">best ${fmt(Math.floor(best))} / ${fmt(t.goal.n)}</span>` : '';
+      this.trial.innerHTML = `<span class="tk">${t.name}</span><span class="tt">${t.text}</span>${bestTxt}`;
+    }
+
+    const touch = touchFirst();
+    if (p.runs === 0) this.hint.innerHTML = `Touch the <b>${tree.id === 'crown' ? 'crown' : 'seed'}</b> to begin your first harvest`;
     else if (urge) this.hint.innerHTML = 'Nothing within reach yet. Gather more light.';
+    else if (tree.light) this.hint.innerHTML = `drag to wander · touch a node to light it · ${touch ? 'hold' : 'right-click'} a lit star to unweave it`;
     else this.hint.innerHTML = 'drag to wander · scroll to look closer · touch a lit node to grow it';
   }
 
@@ -213,17 +273,17 @@ export class Tooltip {
   readonly el = h('div', 'tooltip plate');
   /** interface size setting: the overlay is CSS-zoomed, so positions are divided by it */
   scale = 1;
-  private current: string | null = null;
+  private current: { tree: TreeDef; def: NodeDef; p: TreeProgress } | null = null;
   private visible = false;
 
   constructor(host: HTMLElement) {
     host.append(this.el);
   }
 
-  show(def: NodeDef, state: GameState, sx: number, sy: number, nodeR: number) {
-    const changed = this.current !== def.id;
-    this.current = def.id;
-    this.render(def, state);
+  show(tree: TreeDef, def: NodeDef, p: TreeProgress, sx: number, sy: number, nodeR: number) {
+    const changed = this.current?.def !== def;
+    this.current = { tree, def, p };
+    this.render();
     this.place(sx, sy, nodeR);
     if (!this.visible || changed) {
       this.visible = true;
@@ -232,8 +292,8 @@ export class Tooltip {
     }
   }
 
-  refresh(state: GameState) {
-    if (this.current && this.visible) this.render(NODE_MAP[this.current], state);
+  refresh() {
+    if (this.current && this.visible) this.render();
   }
 
   place(sx: number, sy: number, nodeR: number) {
@@ -262,11 +322,13 @@ export class Tooltip {
     gsap.fromTo(this.el, { x: -7 }, { x: 0, duration: 0.35, ease: 'elastic.out(1.5, 0.25)' });
   }
 
-  private render(def: NodeDef, state: GameState) {
-    const st = nodeState(def, state.levels);
+  private render() {
+    if (!this.current) return;
+    const { tree, def, p } = this.current;
+    const st = nodeState(tree, def, p);
     const color = def.kind === 'awaken' || def.kind === 'core' ? 'var(--gold-hi)' : colorOf(def);
     this.el.style.setProperty('--c', color);
-    const lvl = level(state.levels, def.id);
+    const lvl = level(p.levels, def.id);
     const branch = def.branch2 ? `${BRANCH_NAMES[def.branch]} + ${BRANCH_NAMES[def.branch2]}` : BRANCH_NAMES[def.branch];
 
     if (st === 'silhouette') {
@@ -277,24 +339,38 @@ export class Tooltip {
 
     let stats = '';
     if (def.mods.length && def.kind !== 'core') {
-      const cur = statsFor(state.levels);
-      const nxt = statsFor({ ...state.levels, [def.id]: Math.min(lvl + 1, def.maxLevel) });
+      const cur = statsFor(tree, p.levels);
+      const nxt = statsFor(tree, { ...p.levels, [def.id]: Math.min(lvl + 1, def.maxLevel) });
       const seen = new Set<StatKey>();
       for (const m of def.mods) {
         if (seen.has(m.stat)) continue;
         seen.add(m.stat);
         const a = formatStat(m.stat, cur[m.stat]);
         const b = formatStat(m.stat, nxt[m.stat]);
-        const v = lvl >= def.maxLevel ? a : `${a}<span class="arrow">→</span><span class="next">${b}</span>`;
+        // a curse's price reads red: the change goes the wrong way for the player
+        const worse = STAT_META[m.stat].worse ? nxt[m.stat] > cur[m.stat] : nxt[m.stat] < cur[m.stat];
+        const v = lvl >= def.maxLevel ? a : `${a}<span class="arrow">→</span><span class="next${worse ? ' worse' : ''}">${b}</span>`;
         stats += leader(STAT_META[m.stat].label, v);
       }
     }
 
     let req = '';
     if (st === 'locked') {
-      const items = def.parents.map((p) => `<div class="${isOwned(state.levels, p) ? 'met' : ''}">${NODE_MAP[p].name}</div>`).join('');
-      req = `<div class="tt-req"><span class="t">${def.req === 'all' ? 'Requires all of' : 'Requires one of'}</span>${items}</div>`;
+      const n = needed(def);
+      const lead = n === def.parents.length && n > 1 ? 'Requires all of' : n > 1 ? `Requires ${n} of` : 'Requires one of';
+      const items = def.parents.map((id) => `<div class="${isOwned(p.levels, id) ? 'met' : ''}">${tree.map[id].name}</div>`).join('');
+      req = `<div class="tt-req"><span class="t">${lead}</span>${items}</div>`;
     }
+    const gate = st === 'gated' ? gateOf(tree, def, p) : null;
+    if (gate) req = `<div class="tt-gate"><span class="t">Sealed by ${gate.name}</span>Trial: ${gate.text}.</div>`;
+    const by = st === 'sealed' ? sealedBy(tree, def, p.levels) : null;
+    if (by) req = `<div class="tt-gate"><span class="t">Fork · ${esc(by.name)} is lit</span>Unweave ${esc(by.name)} to choose this instead.</div>`;
+    let fork = '';
+    if (def.fork && lvl === 0 && st !== 'sealed') {
+      const other = forkSiblings(tree, def).map((n) => n.name).join(', ');
+      fork = `<div class="tt-note"><span class="t">Fork</span>Lighting this seals ${esc(other)}.</div>`;
+    }
+    const curse = def.drawback ? `<div class="tt-curse"><span class="t">The price</span>${def.drawback}</div>` : '';
 
     let lvlText = '';
     if (def.kind !== 'core') {
@@ -304,24 +380,58 @@ export class Tooltip {
       } else if (lvl) lvlText = '<span class="tt-lvl">grown</span>';
     }
 
+    // limited light: what this star uses, or would use
+    let light = '';
+    if (tree.light && def.kind !== 'core') {
+      const c = lightCost(def);
+      const free = lightCap(tree, p) - lightUsed(tree, p.levels);
+      const suns = c ? Array.from({ length: c }, () => '<i></i>').join('') : '';
+      if (lvl > 0) light = c ? `<span class="tt-light">${suns}uses ${c} light</span>` : '<span class="tt-light none">burns no light</span>';
+      else light = c ? `<span class="tt-light${c > free ? ' short' : ''}">${suns}${c} light${c > free ? ` · ${free} free` : ''}</span>` : '<span class="tt-light none">burns no light</span>';
+    }
+
     let right = '';
+    const fail = checkBuy(tree, def, p);
     if (def.kind === 'core') right = '<span class="tt-act">touch to harvest <kbd>space</kbd></span>';
     else if (lvl >= def.maxLevel) right = '<span class="tt-maxed">fully grown</span>';
-    else if (st !== 'locked') right = `<span class="tt-cost">${costHtml(nextCost(def, state.levels), state)}</span>`;
+    else if (fail?.reason === 'dark') right = '<span class="tt-maxed short">not enough light</span>';
+    else if (st !== 'locked' && st !== 'gated' && st !== 'sealed') right = `<span class="tt-cost">${costHtml(nextCost(def, p.levels), p)}</span>`;
+
+    // unweaving: what comes back, or what holds it in place
+    let unweave = '';
+    if (tree.light && lvl > 0 && def.kind !== 'core') {
+      const block = unweaveBlock(tree, def, p);
+      const how = touchFirst() ? 'Hold' : 'Right-click';
+      if (block && typeof block === 'object') unweave = `<div class="tt-unweave">${esc(block.name)} grows from it, so it can't be unwoven.</div>`;
+      else if (!block) unweave = `<div class="tt-unweave">${how} to unweave: back comes ${costText(refundOf(def, lvl), tree)} and its light.</div>`;
+    }
 
     const kind = def.kind === 'core' ? 'origin' : `${KIND_NAMES[def.kind].toLowerCase()} · ${branch.toLowerCase()}`;
     const ready = st === 'available' || st === 'owned';
-    const affordHint = ready && def.kind !== 'core' && canAfford(nextCost(def, state.levels), state) ? '<span>ready</span>' : '';
+    const affordHint = ready && def.kind !== 'core' && !fail ? '<span>ready</span>' : '';
+    const desc = def.desc.replace(/^KEYSTONE\. /, '');
+    const foot = lvlText || right || light;
     this.el.innerHTML = `
       <span class="accent"></span>
       <div class="tt-head"><span class="kind">${kind}</span>${affordHint}</div>
       <div class="tt-name">${def.name}</div>
-      <div class="tt-desc">${def.desc.replace(/^KEYSTONE\. /, '')}</div>
-      ${stats || req ? '<div class="rule"></div>' : ''}
+      <div class="tt-desc">${desc}</div>
+      ${curse}
+      ${stats || req || fork ? '<div class="rule"></div>' : ''}
       ${stats ? `<div class="tt-stats">${stats}</div>` : ''}
-      ${req}
-      ${lvlText || right ? `<div class="rule"></div><div class="tt-foot">${lvlText || '<span></span>'}${right}</div>` : ''}`;
+      ${req}${fork}
+      ${foot ? `<div class="rule"></div><div class="tt-foot">${lvlText || light || '<span></span>'}${right}</div>` : ''}
+      ${lvlText && light ? `<div class="tt-foot2">${light}</div>` : ''}
+      ${unweave}`;
   }
+}
+
+/** "1.2K gloam and 3 sigils" */
+function costText(c: Partial<Record<'lumen' | 'prism', number>>, tree: TreeDef): string {
+  const parts: string[] = [];
+  if (c.lumen) parts.push(`${fmt(c.lumen)} ${curName(tree, 'lumen')}`);
+  if (c.prism) parts.push(`${fmt(c.prism)} ${curName(tree, 'prism')}`);
+  return parts.join(' and ') || 'nothing';
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -333,18 +443,23 @@ export class HarvestHud {
   readonly prismPill: HTMLElement;
   private lumenGlyph: HTMLElement;
   private prismGlyph: HTMLElement;
+  private prismLbl: HTMLElement;
   private timer: HTMLElement;
   private fill: HTMLElement;
   private tText: HTMLElement;
   private tLabel: HTMLElement;
+  private trialEl: HTMLElement;
   private combo: HTMLElement;
   private comboX: HTMLElement;
   private comboLbl: HTMLElement;
   private comboMeter: HTMLElement;
   private kills: HTMLElement;
   private banner: HTMLElement;
+  private bossEl: HTMLElement;
+  private bossKey = '';
   readonly settingsBtn: HTMLButtonElement;
   private lastCombo = 0;
+  private tree: TreeDef = TREES.bloom;
 
   constructor(host: HTMLElement) {
     const tl = h('div', 'hud-tl');
@@ -354,14 +469,16 @@ export class HarvestHud {
     this.prismPill = P.el;
     this.lumenGlyph = L.glyph;
     this.prismGlyph = P.glyph;
+    this.prismLbl = P.lbl;
     tl.append(L.el, P.el);
     this.lumen = new Counter(L.val);
     this.prism = new Counter(P.val);
 
-    this.timer = h('div', 'timer', `<div class="timer-row"><span class="lbl">the harvest</span><span class="t">0.0</span></div><div class="timer-bar"><div class="timer-fill"></div></div>`);
+    this.timer = h('div', 'timer', `<div class="timer-row"><span class="lbl">the harvest</span><span class="t">0.0</span></div><div class="timer-bar"><div class="timer-fill"></div></div><div class="htrial"></div>`);
     this.fill = this.timer.querySelector('.timer-fill')!;
     this.tText = this.timer.querySelector('.t')!;
     this.tLabel = this.timer.querySelector('.lbl')!;
+    this.trialEl = this.timer.querySelector('.htrial')!;
 
     this.combo = h('div', 'combo', `<div class="x">×1.00</div><div class="lbl">combo 0</div><div class="meter"><i></i></div>`);
     this.comboX = this.combo.querySelector('.x')!;
@@ -371,20 +488,27 @@ export class HarvestHud {
 
     this.kills = h('div', 'kills', 'shards broken<b>0</b>');
     this.banner = h('div', 'banner');
+    this.bossEl = h('div', 'bossbar', `<div class="bb-row"><span class="lbl">the hollow heart</span><span class="pct"></span></div>`
+      + `<div class="bb-bar"><i class="bb-scar"></i><i class="bb-trail"></i><i class="bb-fill"></i></div><div class="bb-note"></div>`);
     this.settingsBtn = h('button', 'icon-btn hh-settings', ICON.settings);
     this.settingsBtn.title = 'Pause and settings (Esc)';
     this.settingsBtn.setAttribute('aria-label', this.settingsBtn.title);
-    this.root.append(tl, this.timer, this.combo, this.kills, this.banner, this.settingsBtn);
+    this.root.append(tl, this.timer, this.combo, this.kills, this.bossEl, this.banner, this.settingsBtn);
     host.append(this.root);
     gsap.set(this.root, { autoAlpha: 0 });
   }
 
-  show(on: boolean, comboEnabled = false, prismEnabled = false) {
+  show(on: boolean, comboEnabled = false, prismEnabled = false, tree?: TreeDef) {
+    if (tree) {
+      this.tree = tree;
+      this.prismLbl.textContent = curName(tree, 'prism');
+    }
     this.combo.style.display = comboEnabled ? '' : 'none';
     this.prismPill.classList.toggle('on', prismEnabled);
     if (on) {
       this.lumen.set(0, false);
       this.prism.set(0, false);
+      this.setBoss(null);
       gsap.fromTo(this.timer, { y: -16, opacity: 0 }, { y: 0, opacity: 1, duration: 0.6, ease: 'expo.out', delay: 0.15 });
     }
     gsap.to(this.root, { autoAlpha: on ? 1 : 0, duration: on ? 0.4 : 0.3 });
@@ -398,6 +522,53 @@ export class HarvestHud {
     this.timer.classList.toggle('warn', !overtime && remaining <= 5 && remaining > 2.5);
     this.timer.classList.toggle('crit', !overtime && remaining <= 2.5);
     this.tLabel.textContent = overtime ? 'last light' : 'the harvest';
+  }
+
+  /** The trial this harvest is trying for, and how far it has got. */
+  setTrial(t: TrialDef | null, v: number) {
+    this.trialEl.classList.remove('done');
+    this.trialEl.style.display = t ? '' : 'none';
+    if (!t) return;
+    const unit = t.goal.kind === 'gather' ? ` ${curName(this.tree, 'lumen')}` : t.goal.kind === 'hazards' ? ' hazards' : t.goal.kind === 'kills' ? ' shards' : '';
+    this.trialEl.innerHTML = t.goal.kind === 'boss'
+      ? `<span>trial</span><b>${t.text.toLowerCase()}</b>`
+      : `<span>trial · ${t.name.toLowerCase()}</span><b>${fmt(Math.min(v, t.goal.n))} / ${fmt(t.goal.n)}${unit}</b>`;
+  }
+
+  trialPassed(t: TrialDef, banner = true) {
+    this.trialEl.classList.add('done');
+    this.trialEl.innerHTML = `<span>trial passed</span><b>${t.name}</b>`;
+    gsap.fromTo(this.trialEl, { scale: 1.25 }, { scale: 1, duration: 0.6, ease: 'back.out(3)' });
+    if (banner) this.showBanner('Trial passed', t.name, 'rgba(216,204,255,0.85)');
+  }
+
+  /**
+   * The Hollow Heart's health: what is left of it, what this harvest broke, and (hatched) what
+   * earlier harvests broke, so a heart that returns half broken does not look freshly hurt.
+   * `frac` is the share left (null: it has not risen), `scar` the share broken before this harvest.
+   */
+  setBoss(frac: number | null, scar = 0) {
+    const pct = (v: number) => `${(v * 100).toFixed(v > 0 && v < 0.1 ? 1 : 0)}%`;
+    const now = frac == null ? 0 : Math.max(0, 1 - frac - scar);
+    const key = frac == null ? '' : `${(frac * 1000).toFixed(0)}|${(scar * 1000).toFixed(0)}`;
+    if (key === this.bossKey) return;
+    const was = this.bossKey;
+    this.bossKey = key;
+    if (frac == null) {
+      gsap.killTweensOf(this.bossEl);
+      gsap.set(this.bossEl, { autoAlpha: 0 });
+      return;
+    }
+    if (!was) gsap.fromTo(this.bossEl, { autoAlpha: 0, y: 12 }, { autoAlpha: 1, y: 0, duration: 0.7, ease: 'expo.out' });
+    const q = <T extends HTMLElement>(sel: string) => this.bossEl.querySelector<T>(sel)!;
+    q('.bb-fill').style.transform = `scaleX(${frac})`;
+    q('.bb-trail').style.transform = `scaleX(${frac})`;
+    q('.bb-scar').style.width = `${scar * 100}%`;
+    q('.pct').textContent = frac > 0 ? `${pct(frac)} left` : 'broken';
+    const note = scar > 0.005
+      ? `<b class="old">${pct(scar)}</b> broken in earlier harvests${now > 0.0005 ? ` · <b>${pct(now)}</b> this harvest` : ''}`
+      : now > 0.0005 ? `<b>${pct(now)}</b> broken this harvest` : 'every hazard you break cracks it';
+    q('.bb-note').innerHTML = note;
   }
 
   addTimeFx() {
@@ -422,7 +593,7 @@ export class HarvestHud {
     gsap.killTweensOf(this.banner);
     gsap.timeline()
       .fromTo(this.banner, { opacity: 0, y: 10, letterSpacing: '0.2em' }, { opacity: 1, y: 0, letterSpacing: '0.04em', duration: 0.7, ease: 'expo.out' })
-      .to(this.banner, { opacity: 0, y: -6, duration: 0.6, delay: 0.8, ease: 'power2.in' });
+      .to(this.banner, { opacity: 0, y: -6, duration: 0.6, delay: sub.length > 30 ? 1.6 : 0.8, ease: 'power2.in' });
   }
 
   /** screen-space centre of the lumen glyph (target for flying motes) */
@@ -445,6 +616,13 @@ export interface RunResult {
   bestCombo: number;
   duration: number;
   hearts: number;
+  /** the Hollow Crown: hazards broken, the Hollow Heart broken, gloam thieves got away with, trial met */
+  hazards: number;
+  boss: number;
+  /** how broken the Hollow Heart is after this harvest, its old wounds included (null: it did not rise) */
+  bossWounds: number | null;
+  stolen: number;
+  trial: boolean;
 }
 
 export class Summary {
@@ -461,29 +639,41 @@ export class Summary {
 
   get isOpen() { return this.open; }
 
-  show(r: RunResult, record: boolean, total: number, runNumber: number) {
+  /** trial: the trial this harvest went for, if any */
+  show(r: RunResult, record: boolean, p: TreeProgress, tree: TreeDef, trial: TrialDef | null) {
     this.open = true;
+    const A = curName(tree, 'lumen'), B = curName(tree, 'prism');
+    let trialRow = '';
+    if (trial) {
+      trialRow = r.trial
+        ? `<div class="sum-trial done"><span>trial passed</span><b>${trial.name}</b><span>${tree.trials && trial.ring ? 'a ring opens · +' + trial.light + ' light' : 'the crown can be broken'}</span></div>`
+        : `<div class="sum-trial"><span>trial · ${trial.name.toLowerCase()}</span><b>${trial.text}</b></div>`;
+    }
     const rows = [
-      r.prism > 0 ? leader('Prism', `${GLYPH.prism}+${fmt(r.prism)}`) : '',
+      r.prism > 0 ? leader(cap1(B), `${GLYPH.prism}+${fmt(r.prism)}`) : '',
       leader('Shards broken', fmt(r.kills)),
+      tree.trials ? leader('Hazards broken', fmt(r.hazards)) : '',
+      r.stolen > 0 ? leader('Stolen by thieves', `<span class="bad">-${fmt(r.stolen)}</span>`) : '',
       r.hearts > 0 ? leader('Heart crystals', String(r.hearts)) : '',
+      r.boss > 0 ? leader('The Hollow Heart', 'shattered') : r.bossWounds != null ? leader('The Hollow Heart', `${Math.round(r.bossWounds * 100)}% broken`) : '',
       r.bestCombo > 1 ? leader('Longest combo', String(r.bestCombo)) : '',
       leader('Length of night', `${r.duration.toFixed(1)}s`),
-      leader('Lumen in store', `${GLYPH.lumen}${fmt(total)}`),
+      leader(`${cap1(A)} in store`, `${GLYPH.lumen}${fmt(p.lumen)}`),
     ].join('');
     this.modal.innerHTML = `
-      <div class="title">Harvest ${roman(runNumber)}</div>
+      <div class="title">Harvest ${roman(p.runs)}</div>
       <div class="sum-main">
         <div class="big">${GLYPH.lumen}<span class="lv">0</span></div>
-        <div class="sub">lumen gathered</div>
+        <div class="sub">${A} gathered</div>
         ${record ? '<div class="record">New record</div>' : ''}
       </div>
+      ${trialRow}
       <div class="rule orn"></div>
       <div class="sum-rows">${rows}</div>
       <div class="rule"></div>
       <div class="sum-actions">
         <button class="text-btn again">Again<kbd>r</kbd></button>
-        <button class="text-btn primary cont"><span class="shine">To the Bloom</span><kbd>space</kbd></button>
+        <button class="text-btn primary cont"><span class="shine">To the ${tree.id === 'crown' ? 'Crown' : 'Bloom'}</span><kbd>space</kbd></button>
       </div>`;
     this.modal.querySelector('.cont')!.addEventListener('click', () => this.onContinue());
     this.modal.querySelector('.again')!.addEventListener('click', () => this.onAgain());
@@ -494,6 +684,7 @@ export class Summary {
       .fromTo(this.wrap, { opacity: 0 }, { opacity: 1, duration: 0.3 })
       .fromTo(this.modal, { y: 24, opacity: 0 }, { y: 0, opacity: 1, duration: 0.55, ease: 'expo.out' }, 0)
       .to(o, { v: r.lumen, duration: 1.1, ease: 'power3.out', onUpdate: () => { lv.textContent = fmt(Math.floor(o.v)); } }, 0.2)
+      .fromTo(this.modal.querySelector('.sum-trial'), { opacity: 0, y: 6 }, { opacity: 1, y: 0, duration: 0.5 }, 0.5)
       .to(this.modal.querySelectorAll('.sum-rows .leader'), { opacity: 1, x: 0, stagger: 0.06, duration: 0.35, startAt: { x: -10 } }, 0.35)
       .to(this.modal.querySelector('.record'), { opacity: 1, duration: 0.5 }, 1.2);
   }
@@ -504,6 +695,59 @@ export class Summary {
       gsap.to(this.modal, { y: -14, opacity: 0, duration: 0.25, ease: 'power2.in' });
       gsap.to(this.wrap, { opacity: 0, duration: 0.3, onComplete: () => { this.wrap.classList.remove('on'); res(); } });
     });
+  }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+/** The trees: where you are, how far each has come, and the way to the next. */
+export class TreePicker {
+  readonly wrap = h('div', 'modal-wrap');
+  private modal = h('div', 'modal plate double picker');
+  onPick: (id: TreeId) => void = () => {};
+  open = false;
+
+  constructor(host: HTMLElement) {
+    this.wrap.append(this.modal);
+    host.append(this.wrap);
+    this.wrap.addEventListener('pointerdown', (e) => { if (e.target === this.wrap) this.hide(); });
+  }
+
+  show(state: GameState, unlocked: (id: TreeId) => boolean) {
+    this.open = true;
+    const cards = TREE_ORDER.map((id) => {
+      const tree = TREES[id];
+      const p = progressOf(state, id);
+      const on = unlocked(id);
+      const here = state.active === id;
+      const owned = ownedCount(tree, p.levels), total = countable(tree).length;
+      const status = !on ? 'Awaken the seed to find it'
+        : p.awakened ? `${tree.id === 'crown' ? 'Uncrowned' : 'Awakened'} · ${owned} / ${total} stars`
+        : p.runs === 0 ? 'Not yet begun'
+        : `${owned} / ${total} stars · ${p.runs} harvest${p.runs === 1 ? '' : 's'}`;
+      return `<button class="tree-card${here ? ' here' : ''}${on ? '' : ' locked'}" data-id="${id}" ${on ? '' : 'disabled'}>
+        <span class="tc-num">${tree.numeral}</span>
+        <span class="tc-body"><span class="tc-name">${on ? tree.name : 'Unknown'}</span>
+        <span class="tc-blurb">${on ? tree.blurb : 'Something waits beyond the Bloom.'}</span>
+        <span class="tc-status">${status}</span></span>
+        ${here ? '<span class="tc-here">you are here</span>' : ''}</button>`;
+    }).join('');
+    this.modal.innerHTML = `<div class="title">Your trees</div><div class="tree-cards">${cards}</div>
+      <div class="rule"></div><div class="foot"><span class="note">Each tree keeps its own light. Nothing carries over between them.</span><button class="text-btn close">Close<kbd>esc</kbd></button></div>`;
+    this.modal.querySelectorAll<HTMLButtonElement>('.tree-card').forEach((b) => b.addEventListener('click', () => {
+      const id = b.dataset.id as TreeId;
+      this.hide();
+      if (id !== state.active) this.onPick(id);
+    }));
+    this.modal.querySelector('.close')!.addEventListener('click', () => this.hide());
+    this.wrap.classList.add('on');
+    gsap.fromTo(this.modal, { y: 20, opacity: 0 }, { y: 0, opacity: 1, duration: 0.45, ease: 'expo.out' });
+    gsap.fromTo(this.wrap, { opacity: 0 }, { opacity: 1, duration: 0.25 });
+  }
+
+  hide() {
+    if (!this.open) return;
+    this.open = false;
+    gsap.to(this.wrap, { opacity: 0, duration: 0.2, onComplete: () => this.wrap.classList.remove('on') });
   }
 }
 
@@ -651,7 +895,7 @@ export class SettingsPanel {
           ${leader('Time under the stars', fmtTime(L.playTime))}
         </div>
         <div class="rule"></div>
-        <div class="danger-zone"><span class="note">Erase every node, all Lumen and these records.</span><button class="text-btn danger reset">Begin anew</button></div>`;
+        <div class="danger-zone"><span class="note">Erase both trees, all their light and these records.</span><button class="text-btn danger reset">Begin anew</button></div>`;
       }
     }
   }
@@ -726,30 +970,43 @@ export class SettingsPanel {
 // ───────────────────────────────────────────────────────────────────────────
 export class Ending {
   readonly el = h('div', 'ending');
-  onContinue: () => void = () => {};
+  /** onward: the player chose to go on to the next tree */
+  onContinue: (onward: boolean) => void = () => {};
   constructor(host: HTMLElement) {
     host.append(this.el);
   }
-  show(state: GameState) {
+  show(state: GameState, tree: TreeDef) {
+    const p = progressOf(state, tree.id);
     const L = state.lifetime;
+    const crown = tree.id === 'crown';
+    // the Bloom's end opens the way to the Hollow Crown
+    const onward = !crown && state.crown.runs === 0;
+    const text = crown
+      ? { h: 'Uncrowned', p: 'The hollow crown breaks, and the light you grew pours into it. What was empty is full.' }
+      : { h: 'The Seed Awakens', p: onward
+        ? 'Four lights became one. In the new light you can see where the seed fell from: a hollow crown, far out in the dark.'
+        : 'Four lights became one. The void is no longer dark: it blooms, endlessly, with everything you grew.' };
     this.el.innerHTML = `<div>
-      <h1>The Seed Awakens</h1>
-      <p>Four lights became one. The void is no longer dark: it blooms, endlessly, with everything you grew.</p>
+      <h1>${text.h}</h1>
+      <p>${text.p}</p>
       <div class="stats">
         <div><b>${fmtTime(L.playTime)}</b><span>beneath the stars</span></div>
-        <div><b>${roman(Math.max(1, L.runs))}</b><span>harvests</span></div>
+        <div><b>${roman(Math.max(1, p.runs))}</b><span>harvests</span></div>
         <div><b>${fmt(L.shardsBroken)}</b><span>shards</span></div>
-        <div><b>${fmt(L.lumenEarned)}</b><span>lumen</span></div>
+        <div><b>${fmt(crown ? p.bestRun : L.lumenEarned)}</b><span>${crown ? 'best harvest' : 'lumen'}</span></div>
       </div>
-      <button class="rite"><span class="shine">Keep blooming</span></button></div>`;
-    this.el.querySelector('button')!.addEventListener('click', () => {
-      gsap.to(this.el, { opacity: 0, duration: 0.6, onComplete: () => { this.el.classList.remove('on'); this.onContinue(); } });
-    });
+      <div class="ending-actions">
+        ${onward ? '<button class="text-btn stay">Stay in the Bloom</button><button class="rite onward"><span class="shine">Journey to the Hollow Crown</span></button>'
+        : `<button class="rite stay"><span class="shine">${crown ? 'Keep the crown' : 'Keep blooming'}</span></button>`}
+      </div></div>`;
+    const leave = (go: boolean) => gsap.to(this.el, { opacity: 0, duration: 0.6, onComplete: () => { this.el.classList.remove('on'); this.onContinue(go); } });
+    this.el.querySelector('.stay')!.addEventListener('click', () => leave(false));
+    this.el.querySelector('.onward')?.addEventListener('click', () => leave(true));
     this.el.classList.add('on');
     gsap.timeline()
       .fromTo(this.el, { opacity: 0 }, { opacity: 1, duration: 1.2 })
       .fromTo(this.el.querySelector('h1'), { letterSpacing: '0.3em', opacity: 0 }, { letterSpacing: '0.02em', opacity: 1, duration: 2.2, ease: 'expo.out' }, 0.2)
-      .fromTo(this.el.querySelectorAll('p, .stats > div, button'), { y: 16, opacity: 0 }, { y: 0, opacity: 1, stagger: 0.15, duration: 0.8, ease: 'power3.out' }, 1.2);
+      .fromTo(this.el.querySelectorAll('p, .stats > div, .ending-actions > *'), { y: 16, opacity: 0 }, { y: 0, opacity: 1, stagger: 0.15, duration: 0.8, ease: 'power3.out' }, 1.2);
   }
 }
 

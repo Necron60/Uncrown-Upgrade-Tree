@@ -1,3 +1,5 @@
+import type { TreeId } from '../data/tree';
+
 export type Bloom = 'off' | 'soft' | 'full';
 export type Level3 = 'low' | 'medium' | 'high';
 export const MUSIC_TRACKS = ['all', 'adrift', 'hymn', 'cirrus', 'hope'] as const;
@@ -69,14 +71,46 @@ export interface LifetimeStats {
   bestCombo: number;
 }
 
-export interface GameState {
-  version: 1;
+/** One tree's progress: its wallet, its nodes, and how far it has come. */
+export interface TreeProgress {
+  /** the common currency (the Bloom: Lumen, the Hollow Crown: Gloam) */
   lumen: number;
+  /** the rare currency (Prism, Sigils) */
   prism: number;
   levels: Record<string, number>;
+  /** the finale has been bought */
+  awakened: boolean;
+  /** trials passed (the Hollow Crown) */
+  trials: string[];
+  /** the furthest a harvest has come toward each trial */
+  trialBest: Record<string, number>;
+  /** the Hollow Heart's wounds, 0..1 of its health: they stay from one harvest to the next */
+  heart: number;
+  runs: number;
+  bestRun: number;
+}
+
+/**
+ * The save. Still version 1, so the cloud save service takes it unchanged: Tree I (the Bloom) keeps
+ * its progress at the top level, where saves from before there were two trees have it, and the
+ * Hollow Crown has its own slot beside it.
+ */
+export interface GameState extends TreeProgress {
+  version: 1;
   lifetime: LifetimeStats;
   settings: Settings;
-  awakened: boolean;
+  /** the tree on screen */
+  active: TreeId;
+  crown: TreeProgress;
+  /** first-time tips already shown */
+  tips: string[];
+}
+
+/** Marks a save from before there were tips: the tips module quietly ticks off what the player is already past. */
+export const LEGACY_TIPS = '*legacy';
+
+export function progressOf(state: GameState, tree: TreeId): TreeProgress {
+  return tree === 'bloom' ? state : state.crown;
 }
 
 export const SAVE_KEY = 'uncrown-save-v1';
@@ -140,15 +174,46 @@ export function normalizeSettings(raw: unknown): Settings {
   return out;
 }
 
+const ROOTS: Record<TreeId, string> = { bloom: 'seed', crown: 'crown' };
+
+export function newProgress(tree: TreeId): TreeProgress {
+  return { lumen: 0, prism: 0, levels: { [ROOTS[tree]]: 1 }, awakened: false, trials: [], trialBest: {}, heart: 0, runs: 0, bestRun: 0 };
+}
+
 export function newGame(): GameState {
   return {
     version: 1,
-    lumen: 0,
-    prism: 0,
-    levels: { seed: 1 },
+    ...newProgress('bloom'),
     lifetime: { runs: 0, shardsBroken: 0, lumenEarned: 0, prismEarned: 0, bestRun: 0, playTime: 0, bestCombo: 0 },
     settings: defaultSettings(),
-    awakened: false,
+    active: 'bloom',
+    crown: newProgress('crown'),
+    tips: [],
+  };
+}
+
+const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+
+/** One tree's progress from a save, tolerating anything. */
+function parseProgress(raw: unknown, tree: TreeId, fallback: { runs?: number; bestRun?: number } = {}): TreeProgress {
+  const d = (raw && typeof raw === 'object' ? raw : {}) as Partial<TreeProgress>;
+  const root = ROOTS[tree];
+  const levels: Record<string, number> = {};
+  if (d.levels && typeof d.levels === 'object') {
+    for (const [k, v] of Object.entries(d.levels)) levels[k] = Math.max(0, Math.floor(num(v, 0)));
+  }
+  levels[root] = 1;
+  return {
+    lumen: Math.max(0, num(d.lumen, 0)),
+    prism: Math.max(0, num(d.prism, 0)),
+    levels,
+    awakened: !!d.awakened,
+    trials: Array.isArray(d.trials) ? d.trials.filter((t): t is string => typeof t === 'string') : [],
+    trialBest: Object.fromEntries(Object.entries(d.trialBest && typeof d.trialBest === 'object' ? d.trialBest : {})
+      .filter(([, v]) => typeof v === 'number' && Number.isFinite(v)).map(([k, v]) => [k, Math.max(0, v as number)])),
+    heart: Math.min(1, Math.max(0, num(d.heart, 0))),
+    runs: Math.max(0, Math.floor(num(d.runs, fallback.runs ?? 0))),
+    bestRun: Math.max(0, num(d.bestRun, fallback.bestRun ?? 0)),
   };
 }
 
@@ -159,20 +224,19 @@ export function parseSave(raw: string | null): GameState {
   try {
     const data = JSON.parse(raw) as Partial<GameState>;
     if (typeof data !== 'object' || data === null) return base;
-    const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
-    const levels: Record<string, number> = { seed: 1 };
-    if (data.levels && typeof data.levels === 'object') {
-      for (const [k, v] of Object.entries(data.levels)) levels[k] = Math.max(0, Math.floor(num(v, 0)));
-    }
-    levels.seed = 1;
+    const lifetime = { ...base.lifetime, ...(data.lifetime ?? {}) };
+    // before there were two trees, every harvest was a harvest of the Bloom
+    const bloom = parseProgress(data, 'bloom', { runs: lifetime.runs, bestRun: lifetime.bestRun });
+    const tips = Array.isArray(data.tips) ? data.tips.filter((t): t is string => typeof t === 'string')
+      : lifetime.runs > 0 ? [LEGACY_TIPS] : [];
     return {
       version: 1,
-      lumen: Math.max(0, num(data.lumen, 0)),
-      prism: Math.max(0, num(data.prism, 0)),
-      levels,
-      lifetime: { ...base.lifetime, ...(data.lifetime ?? {}) },
+      ...bloom,
+      lifetime,
       settings: normalizeSettings(data.settings),
-      awakened: !!data.awakened,
+      active: data.active === 'crown' ? 'crown' : 'bloom',
+      crown: parseProgress(data.crown, 'crown'),
+      tips,
     };
   } catch {
     return base;

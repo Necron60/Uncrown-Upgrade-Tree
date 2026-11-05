@@ -1,7 +1,7 @@
 import { Container, Mesh, MeshGeometry, Particle, ParticleContainer, RenderTexture, Shader, Sprite, type Renderer } from 'pixi.js';
 import { TAU, damp, pick, rand } from '../core/math';
 import { textures } from './textures';
-import type { Branch } from '../data/tree';
+import type { Branch, TreeDef } from '../data/tree';
 import { BRANCH_COLORS } from '../data/tree';
 
 const NEBULA_VERT = `
@@ -126,23 +126,6 @@ export class Background {
     this.nebMesh = new Mesh({ geometry: new MeshGeometry({ positions: quad, uvs: quad, indices: new Uint32Array([0, 1, 2, 0, 2, 3]) }), shader });
     this.view.addChild(this.nebSprite, this.nebLayer);
 
-    // nebulae (positions in a parallax "world" space)
-    const add = (wx: number, wy: number, scale: number, color: number, alpha: number, branch?: Branch) => {
-      const s = new Sprite(pick(tex.nebula));
-      s.anchor.set(0.5);
-      s.scale.set(scale);
-      s.tint = color;
-      s.alpha = alpha;
-      s.blendMode = 'add';
-      s.rotation = rand(0, TAU);
-      this.nebLayer.addChild(s);
-      this.nebs.push({ s, wx, wy, baseAlpha: alpha, target: alpha, rot: rand(-0.01, 0.01), branch });
-    };
-    // branch clouds sit far out behind their own branch, so they never pile up over the centre
-    add(0, -1050, 2.0, BRANCH_COLORS.force, 0.04, 'force');
-    add(1050, 0, 2.0, BRANCH_COLORS.reach, 0.04, 'reach');
-    add(0, 1050, 2.0, BRANCH_COLORS.flow, 0.04, 'flow');
-    add(-1050, 0, 2.0, BRANCH_COLORS.fortune, 0.04, 'fortune');
 
     this.starPc = new ParticleContainer({
       texture: tex.dot,
@@ -161,6 +144,26 @@ export class Background {
       }
     });
     this.starPc.update();
+  }
+
+  /** Branch clouds sit far out behind their own branch, so they never pile up over the centre. */
+  setBranches(tree: TreeDef) {
+    for (const n of this.nebs) n.s.destroy();
+    this.nebs = [];
+    const tex = textures();
+    for (const b of tree.branches) {
+      const first = tree.nodes.find((n) => n.branch === b && n.ring === 1 && !n.branch2);
+      const a = ((first?.angle ?? 0) * Math.PI) / 180;
+      const s = new Sprite(pick(tex.nebula));
+      s.anchor.set(0.5);
+      s.scale.set(tree.branches.length > 4 ? 1.7 : 2.0);
+      s.tint = BRANCH_COLORS[b];
+      s.alpha = 0.04;
+      s.blendMode = 'add';
+      s.rotation = rand(0, TAU);
+      this.nebLayer.addChild(s);
+      this.nebs.push({ s, wx: Math.cos(a) * 1050, wy: Math.sin(a) * 1050, baseAlpha: 0.04, target: 0.04, rot: rand(-0.01, 0.01), branch: b });
+    }
   }
 
   /** low detail: no nebula, no shooting stars, only the larger stars */

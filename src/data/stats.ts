@@ -39,6 +39,34 @@ export interface Stats {
   goldenHour: number;
   critLumen: number;
   heart: number;
+  // ── the Hollow Crown ──
+  burnChance: number; // chance a lens hit sets a shard alight
+  burnDps: number; // burn damage per second, as a share of pulse damage
+  burnTime: number;
+  burnAmp: number; // extra damage burning shards take from everything
+  burnSpread: number; // burning shards that break set their neighbours alight
+  chill: number; // slow per hit (stacks, fades)
+  freeze: number; // 0: no freezing; each point takes one hit off the 7 a freeze needs
+  freezeTime: number;
+  frozenMult: number; // damage frozen shards take
+  frostNova: number; // frozen shards that break burst into ice (share of their max HP)
+  strikeRate: number; // lightning strikes per second
+  strikeDamage: number; // a strike's damage, in pulses
+  strikeArc: number; // strikes arc on to a neighbour
+  hazardMult: number; // how common hazards are
+  hazardValue: number; // gloam from hazards
+  sigilChance: number; // chance a hazard drops a sigil
+  wardBreak: number; // wards a single hit strips
+  thiefTime: number; // seconds before a thief flees
+  thiefSteal: number; // share of the harvest's gloam a thief takes with it
+  bloodlust: number; // damage bonus for a few seconds after breaking a hazard
+  devour: number; // seconds a broken hazard adds to the harvest
+  timeDrain: number; // how fast the harvest's time runs out
+  thermal: number; // a burning shard freezing (or a frozen one catching fire) cracks for this many pulses
+  supercon: number; // lightning doubles on chilled and frozen shards
+  hellfire: number; // hazards rise already burning
+  goldSigil: number; // chance a golden shard holds a sigil
+  shardHp: number; // how tough every shard is
 }
 
 export type StatKey = keyof Stats;
@@ -83,6 +111,33 @@ export const BASE_STATS: Stats = {
   goldenHour: 0,
   critLumen: 0,
   heart: 0,
+  burnChance: 0,
+  burnDps: 0.5,
+  burnTime: 3,
+  burnAmp: 0,
+  burnSpread: 0,
+  chill: 0,
+  freeze: 0,
+  freezeTime: 2.5,
+  frozenMult: 1.5,
+  frostNova: 0,
+  strikeRate: 0,
+  strikeDamage: 3,
+  strikeArc: 0,
+  hazardMult: 1,
+  hazardValue: 1,
+  sigilChance: 0.35,
+  wardBreak: 1,
+  thiefTime: 5,
+  thiefSteal: 0.25,
+  bloodlust: 0,
+  devour: 0,
+  timeDrain: 1,
+  thermal: 0,
+  supercon: 0,
+  hellfire: 0,
+  goldSigil: 0,
+  shardHp: 1,
 };
 
 /** A per-level modifier. Final stat = (base + Σadd·L) · Π(mul^L). */
@@ -94,7 +149,8 @@ export interface Mod {
 
 type StatFormat = 'int' | 'num' | 'pct' | 'x' | 'sec' | 'px' | 'rate' | 'flag' | 'pctps';
 
-export const STAT_META: Record<StatKey, { label: string; format: StatFormat }> = {
+/** `worse`: a higher value hurts the player (curses push these up) */
+export const STAT_META: Record<StatKey, { label: string; format: StatFormat; worse?: boolean }> = {
   damage: { label: 'Lens damage', format: 'num' },
   damageMult: { label: 'Damage multiplier', format: 'x' },
   pulseRate: { label: 'Pulses per second', format: 'rate' },
@@ -134,6 +190,33 @@ export const STAT_META: Record<StatKey, { label: string; format: StatFormat }> =
   goldenHour: { label: 'Golden Hour', format: 'flag' },
   critLumen: { label: 'Bonus lumen on crit kill', format: 'pct' },
   heart: { label: 'Heart crystals', format: 'flag' },
+  burnChance: { label: 'Ignite chance', format: 'pct' },
+  burnDps: { label: 'Burn per second', format: 'pct' },
+  burnTime: { label: 'Burn length', format: 'sec' },
+  burnAmp: { label: 'Damage to burning shards', format: 'pct' },
+  burnSpread: { label: 'Fire spreads', format: 'flag' },
+  chill: { label: 'Chill per hit', format: 'pct' },
+  freeze: { label: 'Freezing', format: 'int' },
+  freezeTime: { label: 'Freeze length', format: 'sec' },
+  frozenMult: { label: 'Damage to frozen shards', format: 'x' },
+  frostNova: { label: 'Shatterfrost', format: 'pct' },
+  strikeRate: { label: 'Strikes per second', format: 'rate' },
+  strikeDamage: { label: 'Strike damage', format: 'x' },
+  strikeArc: { label: 'Strikes arc', format: 'flag' },
+  hazardMult: { label: 'Hazards', format: 'x', worse: true },
+  hazardValue: { label: 'Gloam from hazards', format: 'x' },
+  sigilChance: { label: 'Sigil chance', format: 'pct' },
+  wardBreak: { label: 'Wards per hit', format: 'int' },
+  thiefTime: { label: 'Time before a thief flees', format: 'sec' },
+  thiefSteal: { label: 'A thief takes', format: 'pct', worse: true },
+  bloodlust: { label: 'Bloodlust', format: 'pct' },
+  devour: { label: 'Time per hazard', format: 'sec' },
+  timeDrain: { label: 'Time drain', format: 'x', worse: true },
+  thermal: { label: 'Thermal shock', format: 'x' },
+  supercon: { label: 'Superconductor', format: 'flag' },
+  hellfire: { label: 'Hellfire', format: 'flag' },
+  goldSigil: { label: 'Sigils in golden shards', format: 'pct' },
+  shardHp: { label: 'Shard toughness', format: 'x', worse: true },
 };
 
 export function formatStat(key: StatKey, v: number): string {
@@ -156,7 +239,9 @@ export function formatStat(key: StatKey, v: number): string {
 export function computeStats(
   levels: Record<string, number>,
   modsFor: (id: string) => readonly Mod[] | undefined,
+  base: Partial<Stats> = {},
 ): Stats {
+  const b: Stats = { ...BASE_STATS, ...base };
   const add: Partial<Record<StatKey, number>> = {};
   const mul: Partial<Record<StatKey, number>> = {};
   for (const id in levels) {
@@ -169,9 +254,9 @@ export function computeStats(
       if (m.mul !== undefined) mul[m.stat] = (mul[m.stat] ?? 1) * Math.pow(m.mul, lvl);
     }
   }
-  const out = { ...BASE_STATS };
+  const out = { ...b };
   for (const k of Object.keys(out) as StatKey[]) {
-    out[k] = (BASE_STATS[k] + (add[k] ?? 0)) * (mul[k] ?? 1);
+    out[k] = (b[k] + (add[k] ?? 0)) * (mul[k] ?? 1);
   }
   return out;
 }

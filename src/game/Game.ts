@@ -1,20 +1,23 @@
 import gsap from 'gsap';
 import { Application, BitmapFont, Container, Filter } from 'pixi.js';
 import { HalfResBloom, type BloomOptions } from '../render/bloom';
-import { effectiveMotion, loadGame, newGame, saveGame, wipeSave, type Bloom, type GameState, type Motion } from '../core/state';
-import { hexToCss } from '../core/math';
+import { effectiveMotion, loadGame, newGame, progressOf, saveGame, wipeSave, type Bloom, type GameState, type Motion, type TreeProgress } from '../core/state';
 import { fmt } from '../core/format';
-import { NODES, NODE_MAP, PRISM_COLOR } from '../data/tree';
+import type { TreeDef, TreeId, TrialDef } from '../data/tree';
+import { TREES } from '../data/trees';
 import { Background } from '../render/background';
 import { Shake } from '../render/shake';
 import { textures } from '../render/textures';
 import { audio } from '../systems/audio';
 import { boot } from '../ui/boot';
-import { anyAffordable, buy, statsFor, type BuyResult } from '../systems/tree-logic';
+import {
+  anyAffordable, buy, currentTrial, sealedBy, statsFor, trialProgress, unweave, type BuyResult, type UnweaveResult,
+} from '../systems/tree-logic';
 import { HarvestScene } from '../scenes/HarvestScene';
 import { TreeScene } from '../scenes/TreeScene';
 import { NodeView } from '../scenes/tree/NodeView';
-import { Ending, HarvestHud, SettingsPanel, Summary, Tooltip, TreeHud, colorOf, h, roman, type RunResult, type SettingsTab } from '../ui/ui';
+import { Ending, HarvestHud, SettingsPanel, Summary, Tooltip, TreeHud, TreePicker, colorOf, h, roman, type RunResult, type SettingsTab } from '../ui/ui';
+import { Tips } from '../ui/tips';
 import { cloud } from '../core/cloud';
 
 type Mode = 'tree' | 'transition' | 'harvest' | 'summary' | 'finale';
@@ -36,8 +39,15 @@ export class Game {
   readonly app = new Application();
   state: GameState;
   bg!: Background;
-  tree!: TreeScene;
+  /** one scene per tree, made the first time that tree is shown */
+  private scenes = new Map<TreeId, TreeScene>();
   harvest: HarvestScene | null = null;
+  picker!: TreePicker;
+  tips!: Tips;
+  /** the trial the current harvest is trying for */
+  private runTrial: TrialDef | null = null;
+  /** a trial passed in the last harvest: its gate opens on the way back to the tree */
+  private pendingGate: TrialDef | null = null;
   hud!: TreeHud;
   tooltip!: Tooltip;
   hhud!: HarvestHud;
@@ -63,10 +73,57 @@ export class Game {
       this.state.lumen += 5e6;
       this.state.prism += 5e3;
     }
-    if (this.params.has('lowfx')) this.state.settings.bloom = 'off';
-    if (this.params.has('ownall')) {
-      for (const n of NODES) if (n.kind !== 'awaken') this.state.levels[n.id] = n.maxLevel;
+    if (this.params.has('dev')) {
+      this.state.crown.lumen += 5e6;
+      this.state.crown.prism += 5e3;
     }
+    if (this.params.has('lowfx')) this.state.settings.bloom = 'off';
+    // test/dev shortcuts: ?crown opens the Hollow Crown, ?trials passes its trials
+    if (this.params.has('crown')) this.state.active = 'crown';
+    if (this.params.has('trials')) this.state.crown.trials = (TREES.crown.trials ?? []).map((t) => t.id);
+    if (this.params.has('ownall')) {
+      const tree = TREES[this.state.active];
+      const p = progressOf(this.state, this.state.active);
+      for (const n of tree.nodes) if (n.kind !== 'awaken' && !sealedBy(tree, n, p.levels)) p.levels[n.id] = n.maxLevel;
+    }
+  }
+
+  /** the tree on screen */
+  get def(): TreeDef {
+    return TREES[this.state.active];
+  }
+
+  /** its progress */
+  get prog(): TreeProgress {
+    return progressOf(this.state, this.state.active);
+  }
+
+  /** the scene of the tree on screen */
+  get tree(): TreeScene {
+    return this.sceneFor(this.state.active);
+  }
+
+  private sceneFor(id: TreeId): TreeScene {
+    let sc = this.scenes.get(id);
+    if (!sc) {
+      sc = new TreeScene(this, TREES[id]);
+      sc.view.visible = false;
+      this.sceneRoot.addChildAt(sc.view, this.sceneRoot.getChildIndex(this.bg.view) + 1);
+      sc.resize(this.app.screen.width, this.app.screen.height);
+      this.scenes.set(id, sc);
+      this.applyTreeSettings(sc);
+    }
+    return sc;
+  }
+
+  /** The Hollow Crown opens once the Bloom has awakened. */
+  isOpen(id: TreeId): boolean {
+    if (id === 'bloom') return true;
+    return this.state.awakened || this.state.crown.runs > 0 || this.params.has('crown');
+  }
+
+  private get canPick(): boolean {
+    return this.isOpen('crown');
   }
 
   /** Motion settings as they apply right now (reduced motion overrides the individual ones). */
@@ -132,8 +189,9 @@ export class Game {
     this.app.stage.addChild(this.sceneRoot);
     this.sceneRoot.addChild(this.bg.view);
     this.sceneRoot.filterArea = this.app.screen;
-    this.tree = new TreeScene(this);
-    this.sceneRoot.addChild(this.tree.view);
+    this.bg.setBranches(this.def);
+    this.tree.view.visible = true;
+    document.body.classList.toggle('tree-crown', this.state.active === 'crown');
     await phase('scenes');
 
     const ui = document.getElementById('ui')!;
@@ -143,6 +201,8 @@ export class Game {
     this.summary = new Summary(ui);
     this.settings = new SettingsPanel(ui);
     this.ending = new Ending(ui);
+    this.picker = new TreePicker(ui);
+    this.tips = new Tips(ui);
     ui.append(this.fpsEl);
     this.wireUi();
 
@@ -171,7 +231,14 @@ export class Game {
     } else {
       this.tree.recenter(true);
     }
-    this.hud.sync(this.state, false, !anyAffordable(this.state));
+    this.syncHud(false);
+    this.tips.bind(() => ({
+      active: this.mode === 'tree',
+      state: this.state, tree: this.def, p: this.prog,
+      nodeAt: (id) => this.tree.nodeOnScreen(id),
+      el: { light: this.hud.lightPill, prism: this.hud.prismPill, trial: this.hud.trial, awaken: this.hud.awakenBtn, harvest: this.hud.harvestBtn, chip: this.hud.chip },
+    }));
+    gsap.delayedCall(2.2, () => this.tips.check());
     await phase('ui');
     this.app.renderer.render(this.app.stage); // first frame: uploads textures, compiles shaders
     await phase('first-frame');
@@ -188,7 +255,9 @@ export class Game {
     // the damage-number font is only needed in a harvest: build it once the tree is up
     const idle = window.requestIdleCallback ?? ((cb: () => void) => setTimeout(cb, 200));
     idle(() => this.ensureDamageFont());
-    gsap.from(this.hud.root.querySelectorAll('.hud-tl, .hud-tr, .chip, .hud-bottom'), { y: -16, opacity: 0, stagger: 0.08, duration: 0.7, delay: 0.75, ease: 'power3.out' }); // as the loading screen's iris opens
+    // as the loading screen's iris opens. clearProps hands the transform back to the stylesheet afterwards: the chip and
+    // the bottom bar are centred with translateX(-50%), which a frozen pixel offset would break once their width changes
+    gsap.from(this.hud.root.querySelectorAll('.hud-tl, .hud-tr, .chip, .hud-bottom'), { y: -16, opacity: 0, stagger: 0.08, duration: 0.7, delay: 0.75, ease: 'power3.out', clearProps: 'transform' });
   }
 
   // ───────────────────────────────────────────── ui wiring
@@ -202,6 +271,13 @@ export class Game {
     this.hhud.settingsBtn.addEventListener('click', () => { audio.click(); this.openSettings(); });
     this.hud.muteBtn.addEventListener('click', () => this.toggleMute());
     this.hud.awakenBtn.addEventListener('click', () => void this.awaken());
+    this.hud.chip.addEventListener('click', () => {
+      if (!this.canPick || this.mode !== 'tree') return;
+      audio.click();
+      this.tips.hide();
+      this.picker.show(this.state, (id) => this.isOpen(id));
+    });
+    this.picker.onPick = (id) => void this.switchTree(id);
     this.summary.onContinue = () => void this.leaveHarvest(false);
     this.summary.onAgain = () => void this.leaveHarvest(true);
     this.settings.onChange = () => { this.applySettings(); this.save(); };
@@ -228,12 +304,65 @@ export class Game {
       this.hud.toast(`<span>Discord</span><b>${loginError.replace(/[<>&]/g, '')}</b>`, 'var(--bad)', 5);
       history.replaceState(null, '', location.pathname);
     }
-    this.ending.onContinue = () => {
+    this.ending.onContinue = (onward) => {
       this.mode = 'tree';
       this.tree.inputEnabled = true;
+      if (onward) {
+        void this.switchTree('crown');
+        return;
+      }
       this.hud.show(true);
-      this.hud.sync(this.state);
+      this.syncHud();
+      this.tips.check();
     };
+  }
+
+  /** Bring the tree HUD in line with the state. */
+  private syncHud(animate = true) {
+    this.hud.sync(this.state, this.def, animate, !anyAffordable(this.def, this.prog), this.canPick);
+  }
+
+  /** Travel to another tree: the dark closes over this one and opens on the other. */
+  async switchTree(id: TreeId) {
+    if (this.mode !== 'tree' || id === this.state.active || !this.isOpen(id)) return;
+    this.mode = 'transition';
+    this.tips.hide();
+    this.tooltip.hide();
+    this.hud.show(false);
+    this.tree.inputEnabled = false;
+    const el = document.getElementById('flash')!;
+    gsap.killTweensOf(el);
+    el.style.background = '#05050b';
+    el.style.mixBlendMode = 'normal';
+    const quick = !this.motion.cameraFx;
+    if (!quick) {
+      const cam = this.tree.cam;
+      cam.locked = true;
+      gsap.to(cam, { zoom: cam.zoom * 0.45, duration: 0.9, ease: 'power3.in' });
+    }
+    await new Promise<void>((res) => gsap.to(el, { opacity: 1, duration: quick ? 0.35 : 0.8, delay: quick ? 0 : 0.2, ease: 'power2.in', onComplete: res }));
+    this.tree.cam.locked = false;
+    this.tree.exit();
+    this.state.active = id;
+    this.save();
+    document.body.classList.toggle('tree-crown', id === 'crown');
+    this.bg.setBranches(this.def);
+    const sc = this.tree;
+    this.applySettings();
+    sc.enter(false);
+    sc.inputEnabled = true;
+    const z = sc.fitZoom();
+    if (!quick) {
+      sc.cam.set(0, 34 / z, z * 0.5, true);
+      sc.recenter();
+    } else sc.recenter(true);
+    this.syncHud(false);
+    audio.reveal(2);
+    gsap.to(el, { opacity: 0, duration: quick ? 0.4 : 1.1, ease: 'power2.out' });
+    this.hud.show(true);
+    this.hud.toast(`<span>Tree ${this.def.numeral}</span><b>${this.def.name}</b>`, colorOf(this.def.map[this.def.root]), 3);
+    this.mode = 'tree';
+    gsap.delayedCall(1.4, () => this.tips.check());
   }
 
   /** From a harvest the run pauses while the panel is open, and the panel can end it early. */
@@ -295,20 +424,30 @@ export class Game {
     const aa = s.antialias === 'on' || (s.antialias === 'auto' && res < 1.75) ? 'inherit' : 'off';
     Filter.defaultOptions.antialias = aa;
     for (const f of Object.values(this.blooms)) if (f) f.antialias = aa;
-    this.tree.setFilterAntialias(aa);
     if (Math.abs(this.app.renderer.resolution - res) > 1e-3) {
       this.app.renderer.resize(this.app.screen.width, this.app.screen.height, res);
     }
-    this.tree.setFxDensity(this.particleDensity);
+    for (const sc of this.scenes.values()) this.applyTreeSettings(sc);
     this.bg.setDetail(s.background);
-    this.tree.setDarkness(s.darkness);
     this.app.ticker.maxFPS = s.fpsCap;
     this.fpsEl.style.display = s.showFps ? '' : 'none';
 
     // interface
     document.documentElement.style.setProperty('--ui-scale', String(s.uiScale));
     this.tooltip.scale = s.uiScale;
+    this.tips.scale = s.uiScale;
+    this.tips.enabled = s.hints;
+    if (!s.hints) this.tips.hide();
     this.hud.setHints(s.hints);
+  }
+
+  /** The settings each tree scene keeps for itself. */
+  private applyTreeSettings(sc: TreeScene) {
+    const s = this.state.settings;
+    const aa = Filter.defaultOptions.antialias === 'off' ? 'off' : 'inherit';
+    sc.setFilterAntialias(aa);
+    sc.setFxDensity(this.particleDensity);
+    sc.setDarkness(s.darkness);
   }
 
   private toggleMute() {
@@ -331,12 +470,16 @@ export class Game {
       if (k === 'escape') this.settings.hide();
       return;
     }
+    if (this.picker.open) {
+      if (k === 'escape') this.picker.hide();
+      return;
+    }
     if (this.mode === 'tree') {
       if (k === ' ' || k === 'enter') { e.preventDefault(); void this.startHarvest(); }
       else if (k === 'c') this.tree.recenter();
       else if (k === 'm') this.toggleMute();
       else if (k === 'escape') this.openSettings();
-      else if (k === 'l' && this.params.has('dev')) { this.state.lumen += 1e5; this.state.prism += 50; this.walletChanged(); }
+      else if (k === 'l' && this.params.has('dev')) { this.prog.lumen += 1e5; this.prog.prism += 50; this.walletChanged(); }
     } else if (this.mode === 'harvest') {
       if (k === 'escape') this.openSettings();
     } else if (this.mode === 'summary' && this.summary.isOpen) {
@@ -349,7 +492,7 @@ export class Game {
     const w = this.app.screen.width;
     const h = this.app.screen.height;
     this.bg.resize(w, h);
-    this.tree.resize(w, h);
+    for (const sc of this.scenes.values()) sc.resize(w, h);
     this.harvest?.resize(w, h);
   }
 
@@ -381,41 +524,63 @@ export class Game {
   }
 
   private walletChanged() {
-    this.hud.sync(this.state, true, !anyAffordable(this.state));
+    this.syncHud();
     this.tree.onWalletChanged();
   }
 
   // ───────────────────────────────────────────── tree actions
   buyNode(id: string): BuyResult {
-    const def = NODE_MAP[id];
-    const res = buy(def, this.state);
+    const def = this.def.map[id];
+    const res = buy(this.def, def, this.prog);
     if (res.ok) {
       this.save();
-      this.hud.sync(this.state, true, !anyAffordable(this.state));
+      this.syncHud();
       this.hud.lumen.bump(1.1);
-      if (res.newLevel === 1 && (def.kind === 'major' || def.kind === 'synergy' || def.kind === 'keystone')) {
-        const label = def.kind === 'keystone' ? 'a keystone awakens' : def.kind === 'synergy' ? 'a synergy forms' : 'a new power';
+      if (res.newLevel === 1 && (def.kind === 'major' || def.kind === 'synergy' || def.kind === 'keystone' || def.kind === 'curse')) {
+        const label = def.kind === 'keystone' ? 'a keystone awakens' : def.kind === 'synergy' ? 'a synergy forms' : def.kind === 'curse' ? 'a curse takes hold' : 'a new power';
         this.hud.toast(`<span>${label}</span><b>${def.name}</b>`, colorOf(def));
       }
-      this.tooltip.refresh(this.state);
+      this.tooltip.refresh();
+      gsap.delayedCall(1.2, () => this.tips.check());
+    } else if (res.reason === 'dark') {
+      this.hud.toast(`<span>not enough</span><b>light</b><span>unweave a star, or pass the next trial</span>`, 'var(--bad)', 2.6);
+      this.hud.lightPill.classList.remove('robbed');
+      void this.hud.lightPill.offsetWidth;
+      this.hud.lightPill.classList.add('robbed');
+    }
+    return res;
+  }
+
+  /** Make a lit star dark again (trees with limited light), for three quarters of its price. */
+  unweaveNode(id: string): UnweaveResult {
+    const def = this.def.map[id];
+    const res = unweave(this.def, def, this.prog);
+    if (res.ok) {
+      this.save();
+      this.syncHud();
+      this.tooltip.refresh();
+    } else if (res.reason === 'needed' && res.by) {
+      this.hud.toast(`<span>${res.by.name} grows from it:</span><b>unweave that first</b>`, 'var(--bad)', 2.4);
     }
     return res;
   }
 
   async awaken() {
     if (this.mode !== 'tree') return;
-    const res = buy(NODE_MAP.awaken, this.state);
+    const def = this.def;
+    const res = buy(def, def.map[def.finale], this.prog);
     if (!res.ok) {
       audio.deny();
       return;
     }
-    this.state.awakened = true;
+    this.prog.awakened = true;
     this.save();
     this.mode = 'finale';
+    this.tips.hide();
     this.hud.show(false);
     this.tooltip.hide();
     await this.tree.awakenSequence();
-    this.ending.show(this.state);
+    this.ending.show(this.state, def);
   }
 
   // ───────────────────────────────────────────── harvest flow
@@ -423,6 +588,7 @@ export class Game {
     if (this.mode !== 'tree') return;
     this.mode = 'transition';
     audio.unlock();
+    this.tips.hide();
     this.tooltip.hide();
     this.hud.show(false);
     this.tree.inputEnabled = false;
@@ -437,15 +603,25 @@ export class Game {
 
   private beginRun() {
     this.ensureDamageFont();
-    const stats = statsFor(this.state.levels);
-    const hs = new HarvestScene(this, stats);
+    const def = this.def;
+    const p = this.prog;
+    const stats = statsFor(def, p.levels);
+    this.runTrial = currentTrial(def, p);
+    // the Hollow Heart rises once every ring is open, until it is broken
+    const heart = def.trials?.find((t) => t.goal.kind === 'boss');
+    const boss = !!heart && !p.trials.includes(heart.id) && def.trials!.every((t) => t === heart || p.trials.includes(t.id));
+    const hs = new HarvestScene(this, stats, {
+      tree: def, depth: p.trials.length, boss, bossWounds: p.heart, trial: this.runTrial,
+      seen: new Set(this.state.tips.filter((t) => t.startsWith('hz:')).map((t) => t.slice(3))),
+      onSeen: (kind) => this.state.tips.push(`hz:${kind}`),
+    });
     this.harvest = hs;
     hs.resize(this.app.screen.width, this.app.screen.height);
     this.sceneRoot.addChild(hs.view);
     hs.onEnd = (r) => this.onRunEnd(r);
     this.syncMusic();
     document.body.classList.add('harvest');
-    this.hhud.show(true, stats.comboPerKill > 0, stats.prismChance > 0 || stats.heart > 0);
+    this.hhud.show(true, stats.comboPerKill > 0, stats.prismChance > 0 || stats.heart > 0 || !!def.trials, def);
     this.hhud.setTimer(stats.duration, stats.duration, false);
     hs.start();
     const el = document.getElementById('flash')!;
@@ -455,17 +631,29 @@ export class Game {
 
   private onRunEnd(r: RunResult) {
     const s = this.state;
+    const p = this.prog;
     const L = s.lifetime;
-    const firstPrism = s.prism === 0 && L.prismEarned === 0 && r.prism > 0;
-    s.lumen += r.lumen;
-    s.prism += r.prism;
+    p.lumen += r.lumen;
+    p.prism += r.prism;
+    p.runs++;
     L.runs++;
     L.shardsBroken += r.kills;
     L.lumenEarned += r.lumen;
     L.prismEarned += r.prism;
     L.bestCombo = Math.max(L.bestCombo, r.bestCombo);
-    const record = r.lumen > L.bestRun && L.runs > 1;
+    const record = r.lumen > p.bestRun && p.runs > 1;
+    p.bestRun = Math.max(p.bestRun, r.lumen);
     L.bestRun = Math.max(L.bestRun, r.lumen);
+    if (r.bossWounds != null) p.heart = Math.max(p.heart, r.bossWounds);
+    // trials: remember the best try; a pass opens its gate on the way back
+    const t = this.runTrial;
+    if (t) {
+      p.trialBest[t.id] = Math.max(p.trialBest[t.id] ?? 0, trialProgress(t, r));
+      if (r.trial && !p.trials.includes(t.id)) {
+        p.trials.push(t.id);
+        this.pendingGate = t;
+      }
+    }
     this.save();
     document.body.classList.remove('harvest');
     this.mode = 'summary';
@@ -473,10 +661,7 @@ export class Game {
       // straight back to the tree; the result is shown as an inscription instead
       gsap.delayedCall(0.2, () => void this.leaveHarvest(false, { r, record }));
     } else {
-      this.summary.show(r, record, s.lumen, L.runs);
-    }
-    if (firstPrism) {
-      gsap.delayedCall(1.4, () => this.hud.toast(`<span>you found</span><b>Prism</b><span>the rarest light</span>`, hexToCss(PRISM_COLOR), 3.5));
+      this.summary.show(r, record, p, this.def, t);
     }
   }
 
@@ -495,20 +680,31 @@ export class Game {
       return;
     }
     this.hhud.show(false);
+    const gate = this.pendingGate;
+    this.pendingGate = null;
     this.tree.enter(true);
     this.tree.inputEnabled = true;
     this.hud.show(true);
     // count the currency up from its pre-run value for a satisfying payoff
-    this.hud.sync(this.state, true, !anyAffordable(this.state));
+    this.syncHud();
     gsap.to(el, { opacity: 0, duration: 0.7, ease: 'power2.out' });
     this.mode = 'tree';
+    const def = this.def;
     if (skipped) {
-      const p = skipped.r.prism > 0 ? ` · +${fmt(skipped.r.prism)} prism` : '';
-      this.hud.toast(`<span>Harvest ${roman(this.state.lifetime.runs)}</span><b>+${fmt(skipped.r.lumen)} lumen${p}</b>${skipped.record ? '<span>a new record</span>' : ''}`, 'var(--gold)', 2.4);
+      const p = skipped.r.prism > 0 ? ` · +${fmt(skipped.r.prism)} ${def.currency.prism.name}` : '';
+      this.hud.toast(`<span>Harvest ${roman(this.prog.runs)}</span><b>+${fmt(skipped.r.lumen)} ${def.currency.lumen.name}${p}</b>${skipped.record ? '<span>a new record</span>' : ''}`, 'var(--gold)', 2.4);
     }
-    if (this.state.lifetime.runs === 1 && this.state.settings.hints) {
-      gsap.delayedCall(1, () => this.hud.toast(`<span>spend your</span><b>Lumen</b><span>on a lit node to grow the Bloom</span>`, 'var(--gold)', 4));
+    if (gate) {
+      // the gate opens once the camera has settled
+      gsap.delayedCall(0.9, () => {
+        if (gate.ring >= 2) this.tree.openGate(gate.ring);
+        else this.tree.crackCrown();
+        this.syncHud();
+        const what = gate.ring >= 2 ? `<span>a ring opens</span><b>+${gate.light} light</b>` : '<span>the crown can be broken</span>';
+        this.hud.toast(`<span>${gate.name}</span>${what}`, 'var(--gold-hi)', 4);
+      });
     }
+    gsap.delayedCall(gate ? 3 : 1, () => this.tips.check());
   }
 
   // ───────────────────────────────────────────── loop
@@ -528,6 +724,7 @@ export class Game {
       this.bg.update(dt, cam.x, cam.y, cam.zoom);
     }
     this.tree.update(dt);
+    this.tips.update();
     if (!(this.mode === 'harvest' && this.settings.open)) this.harvest?.update(dt); // paused under the settings
     this.shake.update(dt);
     this.tree.view.position.set(this.shake.x, this.shake.y);
