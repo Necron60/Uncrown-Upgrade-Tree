@@ -596,6 +596,12 @@ export class HarvestHud {
       .to(this.banner, { opacity: 0, y: -6, duration: 0.6, delay: sub.length > 30 ? 1.6 : 0.8, ease: 'power2.in' });
   }
 
+  /** how far down the screen (CSS pixels) the timer and its trial line reach: shards are born below it */
+  topInset(): number {
+    const r = this.timer.getBoundingClientRect();
+    return r.height ? r.bottom + 10 : 96;
+  }
+
   /** screen-space centre of the lumen glyph (target for flying motes) */
   lumenTarget(): { x: number; y: number } {
     const r = this.lumenGlyph.getBoundingClientRect();

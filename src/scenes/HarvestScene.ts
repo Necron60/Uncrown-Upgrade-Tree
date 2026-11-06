@@ -108,6 +108,13 @@ const ARC_RANGE = 240;
 
 const NOVA_RANGE = 100;
 
+/**
+ * The play area always holds the same space (what the pacing models assume), whatever the window:
+ * a small window, a phone or browser zoom scale the harvest down instead of crowding the shards
+ * into less room around a lens that stays as big.
+ */
+export const ARENA_AREA = 1440 * 780;
+
 /** where the Hollow Heart rises and drifts about: below the banners, so they stay readable */
 const BOSS_Y = 0.56;
 
@@ -188,9 +195,13 @@ export class HarvestScene {
   private flashScale = 1;
   /** rises with every flash, decays fast; dense moments get thinner glows so the screen never whites out */
   private heat = 0;
+  /** screen pixels per arena unit (see ARENA_AREA) */
+  private k = 1;
+  /** arena units kept clear under the timer */
+  private top = 96;
   private onMove = (e: PointerEvent) => {
-    this.lens.px = e.clientX;
-    this.lens.py = e.clientY;
+    this.lens.px = e.clientX / this.k;
+    this.lens.py = e.clientY / this.k;
   };
 
   onEnd: (r: RunResult) => void = () => {};
@@ -232,9 +243,18 @@ export class HarvestScene {
     window.addEventListener('pointerdown', this.onMove);
   }
 
+  /** w, h: the screen in CSS pixels. The arena keeps its area and takes the screen's shape. */
   resize(w: number, h: number) {
-    this.w = w;
-    this.h = h;
+    this.k = Math.sqrt((w * h) / ARENA_AREA);
+    this.w = w / this.k;
+    this.h = h / this.k;
+    this.top = Math.min(this.game.hhud.topInset() / this.k, this.h * 0.22);
+    this.view.scale.set(this.k);
+  }
+
+  /** a point on the screen (CSS pixels), in arena units */
+  private fromScreen(p: { x: number; y: number }) {
+    return { x: p.x / this.k, y: p.y / this.k };
   }
 
   start() {
@@ -303,7 +323,7 @@ export class HarvestScene {
     const type = forceType ?? this.pickType();
     const tier = type === 'boss' ? 0 : this.pickTier();
     const m = 50;
-    const top = 96;
+    const top = this.top;
     const px = x ?? rand(m, this.w - m);
     const py = y ?? rand(top, this.h - m);
     const tree = this.opts.tree;
@@ -864,7 +884,7 @@ export class HarvestScene {
     if (take > 0) this.floatLabel(s.x, s.y - s.r - 12, `-${fmt(take)}`, 0xff5470, 22);
     audio.hollow('flee');
     const tex = textures();
-    const tg = this.game.hhud.lumenTarget();
+    const tg = this.fromScreen(this.game.hhud.lumenTarget());
     const c = s.c;
     const trail = () => { if (!c.destroyed) this.fx.emit({ x: c.x, y: c.y, texture: tex.dot, count: 2, color: [0xff3355, 0xff9aa8], speed: [0, 30], life: [0.3, 0.6], size: [0.2, 0.35], drag: 2 }); };
     gsap.to(c, {
@@ -1039,7 +1059,7 @@ export class HarvestScene {
       this.spawnAcc += st.spawnRate * dt;
       while (this.spawnAcc >= 1) {
         this.spawnAcc -= 1;
-        const x = rand(60, this.w - 60), y = rand(110, this.h - 60);
+        const x = rand(60, this.w - 60), y = rand(this.top + 14, this.h - 60);
         this.spawn(x, y);
         for (let c = 0; c < Math.round(st.cluster); c++) this.spawn(x + rand(-70, 70), y + rand(-70, 70));
       }
@@ -1186,8 +1206,8 @@ export class HarvestScene {
     }
 
     // motes fly to the HUD counter (real time so they feel snappy in slow-mo)
-    const lt = this.game.hhud.lumenTarget();
-    const pt = this.game.hhud.prismTarget();
+    const lt = this.fromScreen(this.game.hhud.lumenTarget());
+    const pt = this.fromScreen(this.game.hhud.prismTarget());
     for (let i = this.motes.length - 1; i >= 0; i--) {
       const m = this.motes[i];
       if (m.delay > 0) { m.delay -= realDt; continue; }

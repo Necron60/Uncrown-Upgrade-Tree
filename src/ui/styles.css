@@ -298,6 +298,9 @@ kbd {
 .bb-note b { font-weight: 600; color: var(--text-dim); }
 .bb-note b.old { color: #d0607a; }
 @media (max-width: 680px) { .bossbar { bottom: 58px; width: 82vw; } }
+/* narrow windows (phones, browser zoom): the timer moves under the counters instead of across them */
+@media (max-width: 1180px) { .timer { top: 84px; width: min(440px, calc(100vw - 48px)); } }
+@media (max-width: 680px) { .timer { top: 78px; } }
 .kills b { font-size: 15px; font-weight: 600; letter-spacing: 0; color: var(--text); margin-left: 8px; font-variant-numeric: tabular-nums; }
 
 .banner {
