@@ -3,18 +3,147 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#05060f" />
+    <meta name="theme-color" content="#05050b" />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <title>Uncrown</title>
+    <script>
+      // honour a saved "reduced motion" before anything paints: the loading screen is the first thing that moves
+      try {
+        var s = JSON.parse(localStorage.getItem('uncrown-save-v1') || 'null');
+        if (s && s.settings && (s.settings.reducedMotion || s.settings.ambient === false)) document.documentElement.classList.add('still');
+      } catch (e) {}
+    </script>
+    <style>
+      /* Loading screen. Inlined so it is styled the instant the page appears, before any script or stylesheet. */
+      #boot {
+        position: fixed; inset: 0; z-index: 100; overflow: hidden;
+        background: radial-gradient(ellipse 80% 70% at 50% calc(50% - 34px), #0c0b1c 0%, #05050b 70%);
+        color: #ececf1; font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+        -webkit-font-smoothing: antialiased; user-select: none; -webkit-user-select: none;
+        --hole: -200;
+      }
+      /* the reveal: a soft-edged hole opens from the seed and lets the running game through */
+      #boot.opening {
+        -webkit-mask-image: radial-gradient(circle at 50% calc(50% - 34px), transparent calc(var(--hole) * 1px), #000 calc(var(--hole) * 1px + 180px));
+        mask-image: radial-gradient(circle at 50% calc(50% - 34px), transparent calc(var(--hole) * 1px), #000 calc(var(--hole) * 1px + 180px));
+      }
+      #boot .sky {
+        position: absolute; left: 50%; top: calc(50% - 34px); width: min(74vmin, 540px); height: min(74vmin, 540px);
+        transform: translate(-50%, -50%); overflow: visible;
+      }
+      #boot .ring { fill: none; stroke: rgba(160, 170, 255, 0.1); stroke-width: 0.6; stroke-dasharray: 1.5 4.5; }
+      #boot .strand { fill: none; stroke-linecap: round; }
+      #boot .strand.glow { stroke-width: 3.4; opacity: 0.25; }
+      #boot .strand.core { stroke-width: 0.9; }
+      #boot .strand.pale { stroke: #fff; stroke-width: 0.5; opacity: 0.5; }
+      #boot .guide { fill: none; stroke: rgba(200, 205, 255, 0.2); stroke-width: 0.8; stroke-dasharray: 0.4 5; stroke-linecap: round; }
+      #boot .star, #boot .seed { transform-box: fill-box; transform-origin: center; }
+      #boot .star { opacity: 0.16; }
+      #boot .seed-breath { transform-box: fill-box; transform-origin: center; animation: boot-breathe 2.6s ease-in-out infinite; }
+      #boot .words {
+        position: absolute; left: 50%; top: calc(50% - 34px + min(37vmin, 270px) + 4px); transform: translateX(-50%);
+        display: grid; justify-items: center; gap: 13px; min-width: 260px;
+      }
+      #boot .title {
+        font-family: 'Cormorant Garamond', 'Iowan Old Style', Georgia, serif; font-weight: 500; font-size: 30px; line-height: 1;
+        letter-spacing: 0.42em; padding-left: 0.42em; text-transform: uppercase; white-space: nowrap;
+        background: linear-gradient(100deg, #aeb1c2 40%, #ffffff 50%, #aeb1c2 60%) 0 0 / 300% 100%;
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+        animation: boot-in 0.9s 0.1s ease both, boot-sheen 3.6s 1s linear infinite;
+      }
+      #boot .bar { position: relative; width: 168px; height: 1px; background: rgba(255, 255, 255, 0.09); animation: boot-in 0.6s 0.25s ease both; }
+      #boot .bar i {
+        position: absolute; inset: 0; transform-origin: left; transform: scaleX(var(--p, 0));
+        background: linear-gradient(90deg, rgba(143, 211, 255, 0.1), #8fd3ff);
+      }
+      #boot .bar b {
+        position: absolute; top: -2px; left: calc(var(--p, 0) * 100% - 2.5px); width: 5px; height: 5px; border-radius: 50%;
+        background: #e4f5ff; box-shadow: 0 0 8px 2px rgba(143, 211, 255, 0.75);
+      }
+      #boot .phase {
+        font-size: 10.5px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #6d707e; white-space: nowrap;
+        min-height: 1.2em; transition: opacity 0.22s ease; animation: boot-in 0.6s 0.4s ease both;
+      }
+      #boot .phase.swap { opacity: 0; }
+      #boot .error { font-size: 13px; color: #a4a6b4; max-width: 380px; text-align: center; line-height: 1.5; letter-spacing: 0; text-transform: none; white-space: normal; }
+      @keyframes boot-breathe { 50% { transform: scale(1.07); } }
+      @keyframes boot-in { from { opacity: 0; transform: translateY(4px); } }
+      @keyframes boot-sheen { to { background-position: -300% 0; } }
+      html.still #boot, html.still #boot * { animation: none !important; }
+      @media (max-width: 520px) { #boot .title { font-size: 24px; } }
+    </style>
   </head>
   <body>
     <div id="stage"></div>
     <div id="vignette"></div>
     <div id="ui"></div>
     <div id="flash"></div>
-    <div id="boot">
-      <div class="boot-seed"></div>
-      <div class="boot-title">UNCROWN</div>
+    <div id="boot" role="progressbar" aria-label="Loading Uncrown" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <svg class="sky" viewBox="-200 -200 400 400" aria-hidden="true">
+        <defs>
+          <radialGradient id="bg-seed"><stop offset="0" stop-color="#fff1d0" stop-opacity="0.85" /><stop offset="0.35" stop-color="#ffcf7a" stop-opacity="0.3" /><stop offset="1" stop-color="#ffb24a" stop-opacity="0" /></radialGradient>
+          <radialGradient id="bg-force"><stop offset="0" stop-color="#ff7a3d" stop-opacity="0.75" /><stop offset="1" stop-color="#ff7a3d" stop-opacity="0" /></radialGradient>
+          <radialGradient id="bg-reach"><stop offset="0" stop-color="#3fdcff" stop-opacity="0.75" /><stop offset="1" stop-color="#3fdcff" stop-opacity="0" /></radialGradient>
+          <radialGradient id="bg-flow"><stop offset="0" stop-color="#4dffa8" stop-opacity="0.75" /><stop offset="1" stop-color="#4dffa8" stop-opacity="0" /></radialGradient>
+          <radialGradient id="bg-fortune"><stop offset="0" stop-color="#ffcf4a" stop-opacity="0.75" /><stop offset="1" stop-color="#ffcf4a" stop-opacity="0" /></radialGradient>
+          <symbol id="b-flare" overflow="visible">
+            <polygon points="0,-17 1.1,0 0,17 -1.1,0" />
+            <polygon points="-17,0 0,1.1 17,0 0,-1.1" />
+            <polygon points="0,-6 0.6,0 0,6 -0.6,0" transform="rotate(45)" opacity="0.6" />
+            <polygon points="0,-6 0.6,0 0,6 -0.6,0" transform="rotate(-45)" opacity="0.6" />
+            <circle r="1.9" fill="#fff" />
+          </symbol>
+        </defs>
+        <circle class="ring" r="124" />
+        <!-- one branch per direction, drawn pointing up and rotated into place: guide, three braided strands, a star -->
+        <g class="branch" style="color:#ff7a3d">
+          <path class="guide" d="M0 -18 L0 -124" />
+          <path class="strand glow" stroke="currentColor" d="M0 -14 C 14 -48, -14 -90, 0 -124" />
+          <path class="strand core" stroke="currentColor" d="M0 -14 C 14 -48, -14 -90, 0 -124" />
+          <path class="strand core" stroke="#ffd2b8" d="M0 -14 C -13 -50, 13 -88, 0 -124" />
+          <path class="strand pale" d="M0 -14 L0 -124" />
+          <g transform="translate(0 -124)"><g class="star"><circle r="13" fill="url(#bg-force)" /><use href="#b-flare" fill="#ffd9c4" /></g></g>
+        </g>
+        <g class="branch" style="color:#3fdcff" transform="rotate(90)">
+          <path class="guide" d="M0 -18 L0 -124" />
+          <path class="strand glow" stroke="currentColor" d="M0 -14 C 14 -48, -14 -90, 0 -124" />
+          <path class="strand core" stroke="currentColor" d="M0 -14 C 14 -48, -14 -90, 0 -124" />
+          <path class="strand core" stroke="#c9f3ff" d="M0 -14 C -13 -50, 13 -88, 0 -124" />
+          <path class="strand pale" d="M0 -14 L0 -124" />
+          <g transform="translate(0 -124)"><g class="star"><circle r="13" fill="url(#bg-reach)" /><use href="#b-flare" fill="#d4f6ff" /></g></g>
+        </g>
+        <g class="branch" style="color:#4dffa8" transform="rotate(180)">
+          <path class="guide" d="M0 -18 L0 -124" />
+          <path class="strand glow" stroke="currentColor" d="M0 -14 C 14 -48, -14 -90, 0 -124" />
+          <path class="strand core" stroke="currentColor" d="M0 -14 C 14 -48, -14 -90, 0 -124" />
+          <path class="strand core" stroke="#c8ffe4" d="M0 -14 C -13 -50, 13 -88, 0 -124" />
+          <path class="strand pale" d="M0 -14 L0 -124" />
+          <g transform="translate(0 -124)"><g class="star"><circle r="13" fill="url(#bg-flow)" /><use href="#b-flare" fill="#d2ffe9" /></g></g>
+        </g>
+        <g class="branch" style="color:#ffcf4a" transform="rotate(270)">
+          <path class="guide" d="M0 -18 L0 -124" />
+          <path class="strand glow" stroke="currentColor" d="M0 -14 C 14 -48, -14 -90, 0 -124" />
+          <path class="strand core" stroke="currentColor" d="M0 -14 C 14 -48, -14 -90, 0 -124" />
+          <path class="strand core" stroke="#ffeebc" d="M0 -14 C -13 -50, 13 -88, 0 -124" />
+          <path class="strand pale" d="M0 -14 L0 -124" />
+          <g transform="translate(0 -124)"><g class="star"><circle r="13" fill="url(#bg-fortune)" /><use href="#b-flare" fill="#fff1c8" /></g></g>
+        </g>
+        <g class="seed">
+          <g class="seed-breath">
+            <circle r="36" fill="url(#bg-seed)" />
+            <polygon points="0,-42 1.6,0 0,42 -1.6,0" fill="#fff4dc" />
+            <polygon points="-42,0 0,1.6 42,0 0,-1.6" fill="#fff4dc" />
+            <polygon points="0,-21 1,0 0,21 -1,0" fill="#ffe2a8" opacity="0.7" transform="rotate(45)" />
+            <polygon points="0,-21 1,0 0,21 -1,0" fill="#ffe2a8" opacity="0.7" transform="rotate(-45)" />
+            <circle r="4.2" fill="#fff" />
+          </g>
+        </g>
+      </svg>
+      <div class="words">
+        <div class="title">Uncrown</div>
+        <div class="bar"><i></i><b></b></div>
+        <div class="phase">gathering light</div>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
