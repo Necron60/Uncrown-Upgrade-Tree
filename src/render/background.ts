@@ -1,7 +1,7 @@
 import { Container, Mesh, MeshGeometry, Particle, ParticleContainer, RenderTexture, Shader, Sprite, type Renderer } from 'pixi.js';
 import { TAU, damp, pick, rand } from '../core/math';
 import { textures } from './textures';
-import type { Branch } from '../data/tree';
+import type { Branch, TreeDef } from '../data/tree';
 import { BRANCH_COLORS } from '../data/tree';
 
 const NEBULA_VERT = `
@@ -24,6 +24,7 @@ out vec4 finalColor;
 uniform float uTime;
 uniform vec2 uAspect;
 uniform vec2 uCam;
+uniform float uCrown;
 
 float hash(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
@@ -51,12 +52,13 @@ void main() {
   vec2 r = vec2(fbm(p + 3.0 * q + vec2(1.7, 9.2) + 0.15 * t), fbm(p + 3.0 * q + vec2(8.3, 2.8) - 0.12 * t));
   float n = fbm(p + 2.6 * r);
 
-  vec3 col = vec3(0.025, 0.020, 0.070);                                               // the void
-  col = mix(col, vec3(0.24, 0.10, 0.46), smoothstep(0.25, 0.75, n));                   // violet gas
-  col = mix(col, vec3(0.05, 0.33, 0.50), smoothstep(0.55, 1.05, length(q)) * 0.75);    // teal currents
-  col = mix(col, vec3(0.55, 0.15, 0.44), smoothstep(0.50, 0.80, r.y) * 0.55);          // magenta embers
-  col += vec3(0.65, 0.55, 0.95) * pow(smoothstep(0.50, 0.85, n), 2.0) * 0.35;          // filaments where folds pile up
-  col *= 1.0 - smoothstep(0.45, 0.70, fbm(p * 2.4 - r * 1.7 + 4.0)) * 0.5;              // dust lanes
+  float d = clamp(uCrown, 0.0, 1.0);
+  vec3 col = mix(vec3(0.025, 0.020, 0.070), vec3(0.018, 0.008, 0.040), d);               // the void
+  col = mix(col, mix(vec3(0.24, 0.10, 0.46), vec3(0.18, 0.06, 0.36), d), smoothstep(0.25, 0.75, n));
+  col = mix(col, mix(vec3(0.05, 0.33, 0.50), vec3(0.10, 0.14, 0.42), d), smoothstep(0.55, 1.05, length(q)) * 0.75);
+  col = mix(col, mix(vec3(0.55, 0.15, 0.44), vec3(0.58, 0.09, 0.24), d), smoothstep(0.50, 0.80, r.y) * 0.55);
+  col += mix(vec3(0.65, 0.55, 0.95), vec3(0.75, 0.45, 0.85), d) * pow(smoothstep(0.50, 0.85, n), 2.0) * 0.35;
+  col *= 1.0 - smoothstep(0.45, 0.70, fbm(p * 2.4 - r * 1.7 + 4.0)) * (0.5 + d * 0.15); // dust lanes
   col *= mix(0.4, 1.0, smoothstep(1.4, 0.25, length((vUV - 0.5) * uAspect * 1.6)));    // vignette
   finalColor = vec4(col, 1.0);
 }`;
@@ -93,7 +95,7 @@ export class Background {
   private nebRT = RenderTexture.create({ width: 2, height: 2, resolution: 1 });
   private nebSprite = new Sprite(this.nebRT);
   private nebMesh: Mesh<MeshGeometry, Shader>;
-  private nebU: { uTime: number; uAspect: Float32Array; uCam: Float32Array };
+  private nebU: { uTime: number; uAspect: Float32Array; uCam: Float32Array; uCrown: number };
   private nebWait = 0;
   private nebTime = rand(0, 100);
   private stars: Star[] = [];
@@ -118,6 +120,7 @@ export class Background {
           uTime: { value: 0, type: 'f32' },
           uAspect: { value: new Float32Array([1, 1]), type: 'vec2<f32>' },
           uCam: { value: new Float32Array([0, 0]), type: 'vec2<f32>' },
+          uCrown: { value: 0, type: 'f32' },
         },
       },
     });
@@ -126,23 +129,6 @@ export class Background {
     this.nebMesh = new Mesh({ geometry: new MeshGeometry({ positions: quad, uvs: quad, indices: new Uint32Array([0, 1, 2, 0, 2, 3]) }), shader });
     this.view.addChild(this.nebSprite, this.nebLayer);
 
-    // nebulae (positions in a parallax "world" space)
-    const add = (wx: number, wy: number, scale: number, color: number, alpha: number, branch?: Branch) => {
-      const s = new Sprite(pick(tex.nebula));
-      s.anchor.set(0.5);
-      s.scale.set(scale);
-      s.tint = color;
-      s.alpha = alpha;
-      s.blendMode = 'add';
-      s.rotation = rand(0, TAU);
-      this.nebLayer.addChild(s);
-      this.nebs.push({ s, wx, wy, baseAlpha: alpha, target: alpha, rot: rand(-0.01, 0.01), branch });
-    };
-    // branch clouds sit far out behind their own branch, so they never pile up over the centre
-    add(0, -1050, 2.0, BRANCH_COLORS.force, 0.04, 'force');
-    add(1050, 0, 2.0, BRANCH_COLORS.reach, 0.04, 'reach');
-    add(0, 1050, 2.0, BRANCH_COLORS.flow, 0.04, 'flow');
-    add(-1050, 0, 2.0, BRANCH_COLORS.fortune, 0.04, 'fortune');
 
     this.starPc = new ParticleContainer({
       texture: tex.dot,
@@ -163,6 +149,28 @@ export class Background {
     this.starPc.update();
   }
 
+  /** Branch clouds sit far out behind their own branch, so they never pile up over the centre. */
+  setBranches(tree: TreeDef, depth = 0) {
+    this.nebU.uCrown = tree.id === 'crown' ? Math.min(1, 0.25 + depth * 0.16) : 0;
+    this.nebWait = 0;
+    for (const n of this.nebs) n.s.destroy();
+    this.nebs = [];
+    const tex = textures();
+    for (const b of tree.branches) {
+      const first = tree.nodes.find((n) => n.branch === b && n.ring === 1 && !n.branch2);
+      const a = ((first?.angle ?? 0) * Math.PI) / 180;
+      const s = new Sprite(pick(tex.nebula));
+      s.anchor.set(0.5);
+      s.scale.set(tree.branches.length > 4 ? 1.7 : 2.0);
+      s.tint = BRANCH_COLORS[b];
+      s.alpha = 0.04;
+      s.blendMode = 'add';
+      s.rotation = rand(0, TAU);
+      this.nebLayer.addChild(s);
+      this.nebs.push({ s, wx: Math.cos(a) * 1050, wy: Math.sin(a) * 1050, baseAlpha: 0.04, target: 0.04, rot: rand(-0.01, 0.01), branch: b });
+    }
+  }
+
   /** low detail: no nebula, no shooting stars, only the larger stars */
   setDetail(level: 'low' | 'high') {
     this.lowDetail = level === 'low';
@@ -171,12 +179,12 @@ export class Background {
   }
 
   resize(w: number, h: number) {
-    this.w = w;
-    this.h = h;
-    this.nebRT.resize(Math.ceil(w * NEBULA_SCALE), Math.ceil(h * NEBULA_SCALE));
+    this.w = Math.max(1, w);
+    this.h = Math.max(1, h);
+    this.nebRT.resize(Math.max(2, Math.ceil(this.w * NEBULA_SCALE)), Math.max(2, Math.ceil(this.h * NEBULA_SCALE)));
     this.nebMesh.scale.set(this.nebRT.width, this.nebRT.height);
-    this.nebSprite.setSize(w, h);
-    this.nebU.uAspect[0] = w / h;
+    this.nebSprite.setSize(this.w, this.h);
+    this.nebU.uAspect[0] = this.w / this.h;
     this.nebWait = 0;
   }
 

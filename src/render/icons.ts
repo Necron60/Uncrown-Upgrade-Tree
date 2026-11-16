@@ -273,5 +273,83 @@ export function drawIcon(g: Graphics, key: IconKey, r: number, color: number, al
         .fill(fill);
       break;
     }
+    // ── the Hollow Crown ──
+    case 'flame': {
+      // an outer tongue of fire and a hot inner one
+      g.moveTo(0, -r).bezierCurveTo(r * 0.25, -r * 0.45, r * 0.85, -r * 0.2, r * 0.7, r * 0.35)
+        .bezierCurveTo(r * 0.6, r * 0.8, r * 0.2, r * 0.95, 0, r * 0.95)
+        .bezierCurveTo(-r * 0.2, r * 0.95, -r * 0.65, r * 0.8, -r * 0.7, r * 0.3)
+        .bezierCurveTo(-r * 0.75, -r * 0.05, -r * 0.4, -r * 0.2, -r * 0.3, -r * 0.55)
+        .bezierCurveTo(-r * 0.1, -r * 0.35, -r * 0.05, -r * 0.6, 0, -r).stroke(st);
+      g.moveTo(0, -r * 0.15).bezierCurveTo(r * 0.3, r * 0.15, r * 0.35, r * 0.75, 0, r * 0.72)
+        .bezierCurveTo(-r * 0.35, r * 0.75, -r * 0.3, r * 0.3, 0, -r * 0.15).fill(fill);
+      break;
+    }
+    case 'snow': {
+      for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * Math.PI + Math.PI / 2;
+        const cx = Math.cos(a), cy = Math.sin(a);
+        g.moveTo(-cx * r, -cy * r).lineTo(cx * r, cy * r).stroke(st);
+        for (const sgn of [-1, 1]) {
+          const bx = cx * r * 0.6 * sgn, by = cy * r * 0.6 * sgn;
+          for (const d of [-0.6, 0.6]) {
+            const b = a + d + (sgn < 0 ? Math.PI : 0);
+            g.moveTo(bx, by).lineTo(bx + Math.cos(b) * r * 0.3, by + Math.sin(b) * r * 0.3).stroke({ ...st, width: w * 0.8 });
+          }
+        }
+      }
+      break;
+    }
+    case 'skull': {
+      g.moveTo(-r * 0.75, r * 0.1).bezierCurveTo(-r * 0.85, -r * 0.95, r * 0.85, -r * 0.95, r * 0.75, r * 0.1)
+        .lineTo(r * 0.5, r * 0.35).lineTo(r * 0.5, r * 0.8).lineTo(-r * 0.5, r * 0.8).lineTo(-r * 0.5, r * 0.35).closePath().stroke(st);
+      g.circle(-r * 0.32, -r * 0.12, r * 0.2).fill(fill);
+      g.circle(r * 0.32, -r * 0.12, r * 0.2).fill(fill);
+      g.moveTo(-r * 0.15, r * 0.55).lineTo(-r * 0.15, r * 0.8).stroke({ ...st, width: w * 0.7 });
+      g.moveTo(r * 0.15, r * 0.55).lineTo(r * 0.15, r * 0.8).stroke({ ...st, width: w * 0.7 });
+      break;
+    }
+    case 'eye': {
+      g.moveTo(-r, 0).quadraticCurveTo(0, -r * 0.95, r, 0).quadraticCurveTo(0, r * 0.95, -r, 0).stroke(st);
+      g.circle(0, 0, r * 0.36).fill(fill);
+      g.circle(0, 0, r * 0.13).fill({ color: 0x0b0d1c, alpha: 1 });
+      break;
+    }
+    case 'shield': {
+      g.moveTo(0, -r * 0.95).lineTo(r * 0.8, -r * 0.6).bezierCurveTo(r * 0.8, r * 0.25, r * 0.4, r * 0.7, 0, r * 0.95)
+        .bezierCurveTo(-r * 0.4, r * 0.7, -r * 0.8, r * 0.25, -r * 0.8, -r * 0.6).closePath().stroke(st);
+      g.moveTo(-r * 0.35, -r * 0.2).lineTo(r * 0.35, r * 0.35).stroke(st);
+      break;
+    }
+    case 'fang': {
+      for (const sx of [-1, 1]) {
+        g.moveTo(sx * r * 0.85, -r * 0.55).bezierCurveTo(sx * r * 0.7, r * 0.1, sx * r * 0.35, r * 0.6, sx * r * 0.18, r * 0.95)
+          .bezierCurveTo(sx * r * 0.12, r * 0.35, sx * r * 0.2, -r * 0.1, sx * r * 0.32, -r * 0.55).closePath().fill(fill);
+      }
+      g.moveTo(-r * 0.95, -r * 0.7).quadraticCurveTo(0, -r * 0.4, r * 0.95, -r * 0.7).stroke({ ...st, width: w * 0.8, alpha: alpha * 0.7 });
+      break;
+    }
+    case 'chain': {
+      for (const [cx, cy, rot] of [[-r * 0.35, r * 0.35, -0.785], [r * 0.35, -r * 0.35, -0.785]] as const) {
+        const c = Math.cos(rot), sn = Math.sin(rot);
+        const rx = r * 0.55, ry = r * 0.3;
+        g.moveTo(cx + c * rx, cy + sn * rx);
+        for (let i = 1; i <= 24; i++) {
+          const t = (i / 24) * TAU;
+          const x = Math.cos(t) * rx, y = Math.sin(t) * ry;
+          g.lineTo(cx + x * c - y * sn, cy + x * sn + y * c);
+        }
+        g.stroke(st);
+      }
+      break;
+    }
+    case 'storm': {
+      // a cloud with a bolt falling from it
+      g.moveTo(-r * 0.75, r * 0.05).bezierCurveTo(-r * 1.05, -r * 0.2, -r * 0.65, -r * 0.7, -r * 0.3, -r * 0.5)
+        .bezierCurveTo(-r * 0.15, -r * 0.95, r * 0.55, -r * 0.95, r * 0.55, -r * 0.45)
+        .bezierCurveTo(r * 1.0, -r * 0.5, r * 1.05, r * 0.05, r * 0.7, r * 0.05).closePath().stroke(st);
+      g.poly([r * 0.05, r * 0.05, -r * 0.3, r * 0.55, -r * 0.02, r * 0.55, -r * 0.2, r * 1.0, r * 0.35, r * 0.4, r * 0.05, r * 0.4, r * 0.2, r * 0.05]).fill(fill);
+      break;
+    }
   }
 }
