@@ -4,7 +4,7 @@
  * It isn't exact physics. The point is to catch walls, dead zones, and runaway growth.
  */
 import { describe, expect, it } from 'vitest';
-import { NODES, NODE_MAP } from '../src/data/tree';
+import { BLOOM } from '../src/data/trees';
 import { newGame } from '../src/core/state';
 import { buy, checkBuy, nextCost, statsFor } from '../src/systems/tree-logic';
 import type { Stats } from '../src/data/stats';
@@ -17,6 +17,9 @@ const TIERS = [
 const HEART = { hp: 2400, value: 600, r: 58 };
 const AREA = 1440 * 780;
 const SKILL = 2.2; // how much better than random the player positions the lens
+
+const NODES = BLOOM.nodes;
+const NODE_MAP = BLOOM.map;
 
 let seed = 12345;
 const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
@@ -141,7 +144,7 @@ function playthrough(verbose = false) {
   const log: string[] = [];
   const milestones: Record<string, number> = {};
   while (runs < 400 && !s.levels.awaken) {
-    const st = statsFor(s.levels);
+    const st = statsFor(BLOOM, s.levels);
     const r = simulateRun(st);
     runs++;
     time += r.duration + 8; // + time spent in the tree
@@ -151,8 +154,8 @@ function playthrough(verbose = false) {
     const names: string[] = [];
     // reasonable player: always grab the cheapest thing; awaken as soon as possible
     for (;;) {
-      if (checkBuy(NODE_MAP.awaken, s) === null) { buy(NODE_MAP.awaken, s); milestones.awaken = runs; break; }
-      const opts = NODES.filter((n) => n.kind !== 'awaken' && checkBuy(n, s) === null)
+      if (checkBuy(BLOOM, NODE_MAP.awaken, s) === null) { buy(BLOOM, NODE_MAP.awaken, s); milestones.awaken = runs; break; }
+      const opts = NODES.filter((n) => n.kind !== 'awaken' && checkBuy(BLOOM, n, s) === null)
         // players love new mechanics: first levels of majors/synergies/keystones feel "cheaper"
         .map((n) => {
           const c = nextCost(n, s.levels);
@@ -161,7 +164,7 @@ function playthrough(verbose = false) {
         })
         .sort((a, b) => a.c - b.c);
       if (!opts.length) break;
-      buy(opts[0].n, s);
+      buy(BLOOM, opts[0].n, s);
       bought++;
       names.push(opts[0].n.id);
       const id = opts[0].n.id;
@@ -188,7 +191,7 @@ describe('balance', () => {
 
   it('the first run always affords at least one node', () => {
     seed = 777;
-    const st = statsFor(newGame().levels);
+    const st = statsFor(BLOOM, newGame().levels);
     const r = simulateRun(st);
     expect(r.lumen).toBeGreaterThanOrEqual(5);
   });
