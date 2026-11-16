@@ -113,6 +113,8 @@ export interface TreeDef {
   /** limited light: lighting a star uses some (see lightCost); trials add more */
   light?: { base: number };
   trials?: TrialDef[];
+  /** keystones required to wake the boss trial, if any */
+  bossKeystones?: number;
 }
 
 /** Light a lit node uses in a tree with limited light. Curses burn none. */

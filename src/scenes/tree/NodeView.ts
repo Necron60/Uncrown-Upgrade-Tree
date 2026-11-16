@@ -425,7 +425,7 @@ export class NodeView {
       sp.position.set(Math.cos(a) * rr, Math.sin(a) * rr * 0.92);
       sp.alpha = 0.5 + 0.5 * Math.sin(t * 4 + i * 2);
       sp.rotation = t;
-      sp.tint = this.def.kind === 'core' ? 0xffe0a0 : this.color;
+      sp.tint = this.def.kind === 'core' ? (this.tree.id === 'crown' ? 0xd8ccff : 0xffe0a0) : this.color;
     });
   }
 

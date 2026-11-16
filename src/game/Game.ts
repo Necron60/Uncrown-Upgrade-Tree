@@ -11,7 +11,8 @@ import { textures } from '../render/textures';
 import { audio } from '../systems/audio';
 import { boot } from '../ui/boot';
 import {
-  anyAffordable, buy, currentTrial, sealedBy, statsFor, trialProgress, unweave, type BuyResult, type UnweaveResult,
+  anyAffordable, bossReady, buy, currentTrial, sealedBy, statsFor, trialProgress, unweave, unweaveCascade,
+  type BuyResult, type CascadeUnweaveResult, type UnweaveResult,
 } from '../systems/tree-logic';
 import { HarvestScene } from '../scenes/HarvestScene';
 import { TreeScene } from '../scenes/TreeScene';
@@ -46,8 +47,8 @@ export class Game {
   tips!: Tips;
   /** the trial the current harvest is trying for */
   private runTrial: TrialDef | null = null;
-  /** a trial passed in the last harvest: its gate opens on the way back to the tree */
-  private pendingGate: TrialDef | null = null;
+  /** trials passed since returning from the tree: their gates open on the way back */
+  private pendingGates: TrialDef[] = [];
   hud!: TreeHud;
   tooltip!: Tooltip;
   hhud!: HarvestHud;
@@ -189,7 +190,7 @@ export class Game {
     this.app.stage.addChild(this.sceneRoot);
     this.sceneRoot.addChild(this.bg.view);
     this.sceneRoot.filterArea = this.app.screen;
-    this.bg.setBranches(this.def);
+    this.bg.setBranches(this.def, this.prog.trials.length);
     this.tree.view.visible = true;
     document.body.classList.toggle('tree-crown', this.state.active === 'crown');
     await phase('scenes');
@@ -346,7 +347,7 @@ export class Game {
     this.state.active = id;
     this.save();
     document.body.classList.toggle('tree-crown', id === 'crown');
-    this.bg.setBranches(this.def);
+    this.bg.setBranches(this.def, this.prog.trials.length);
     const sc = this.tree;
     this.applySettings();
     sc.enter(false);
@@ -367,6 +368,7 @@ export class Game {
 
   /** From a harvest the run pauses while the panel is open, and the panel can end it early. */
   private openSettings(tab?: SettingsTab) {
+    if (this.mode === 'harvest' && this.harvest?.isEnded) return;
     this.settings.show(this.state, this.mode === 'harvest' ? () => this.harvest?.forceEnd() : null, tab);
   }
 
@@ -551,16 +553,16 @@ export class Game {
     return res;
   }
 
-  /** Make a lit star dark again (trees with limited light), for three quarters of its price. */
-  unweaveNode(id: string): UnweaveResult {
+  /** Make a lit star dark again (trees with limited light), or cascade through its dependents when Shift is held. */
+  unweaveNode(id: string, cascade = false): UnweaveResult | CascadeUnweaveResult {
     const def = this.def.map[id];
-    const res = unweave(this.def, def, this.prog);
+    const res = cascade ? unweaveCascade(this.def, def, this.prog) : unweave(this.def, def, this.prog);
     if (res.ok) {
       this.save();
       this.syncHud();
       this.tooltip.refresh();
-    } else if (res.reason === 'needed' && res.by) {
-      this.hud.toast(`<span>${res.by.name} grows from it:</span><b>unweave that first</b>`, 'var(--bad)', 2.4);
+    } else if ('reason' in res && res.reason === 'needed' && res.by) {
+      this.hud.toast(`<span>${res.by.name} grows from it:</span><b>Shift+right-click to unweave all</b>`, 'var(--bad)', 2.6);
     }
     return res;
   }
@@ -608,8 +610,7 @@ export class Game {
     const stats = statsFor(def, p.levels);
     this.runTrial = currentTrial(def, p);
     // the Hollow Heart rises once every ring is open, until it is broken
-    const heart = def.trials?.find((t) => t.goal.kind === 'boss');
-    const boss = !!heart && !p.trials.includes(heart.id) && def.trials!.every((t) => t === heart || p.trials.includes(t.id));
+    const boss = bossReady(def, p);
     const hs = new HarvestScene(this, stats, {
       tree: def, depth: p.trials.length, boss, bossWounds: p.heart, trial: this.runTrial,
       seen: new Set(this.state.tips.filter((t) => t.startsWith('hz:')).map((t) => t.slice(3))),
@@ -621,7 +622,7 @@ export class Game {
     hs.onEnd = (r) => this.onRunEnd(r);
     this.syncMusic();
     document.body.classList.add('harvest');
-    this.hhud.show(true, stats.comboPerKill > 0, stats.prismChance > 0 || stats.heart > 0 || !!def.trials, def);
+    this.hhud.show(true, stats.comboPerKill > 0 || stats.comboDmg > 0, stats.prismChance > 0 || stats.heart > 0 || !!def.trials, def);
     this.hhud.setTimer(stats.duration, stats.duration, false);
     hs.start();
     const el = document.getElementById('flash')!;
@@ -630,6 +631,7 @@ export class Game {
   }
 
   private onRunEnd(r: RunResult) {
+    if (this.settings.open) this.settings.hide();
     const s = this.state;
     const p = this.prog;
     const L = s.lifetime;
@@ -651,7 +653,7 @@ export class Game {
       p.trialBest[t.id] = Math.max(p.trialBest[t.id] ?? 0, trialProgress(t, r));
       if (r.trial && !p.trials.includes(t.id)) {
         p.trials.push(t.id);
-        this.pendingGate = t;
+        if (!this.pendingGates.some((g) => g.id === t.id)) this.pendingGates.push(t);
       }
     }
     this.save();
@@ -680,8 +682,8 @@ export class Game {
       return;
     }
     this.hhud.show(false);
-    const gate = this.pendingGate;
-    this.pendingGate = null;
+    const gates = this.pendingGates;
+    this.pendingGates = [];
     this.tree.enter(true);
     this.tree.inputEnabled = true;
     this.hud.show(true);
@@ -694,17 +696,25 @@ export class Game {
       const p = skipped.r.prism > 0 ? ` · +${fmt(skipped.r.prism)} ${def.currency.prism.name}` : '';
       this.hud.toast(`<span>Harvest ${roman(this.prog.runs)}</span><b>+${fmt(skipped.r.lumen)} ${def.currency.lumen.name}${p}</b>${skipped.record ? '<span>a new record</span>' : ''}`, 'var(--gold)', 2.4);
     }
-    if (gate) {
+    if (gates.length > 0) {
+      this.bg.setBranches(this.def, this.prog.trials.length);
       // the gate opens once the camera has settled
       gsap.delayedCall(0.9, () => {
-        if (gate.ring >= 2) this.tree.openGate(gate.ring);
-        else this.tree.crackCrown();
+        if (this.mode !== 'tree') return;
+        for (const gate of gates) {
+          if (gate.ring >= 2) this.tree.openGate(gate.ring);
+          else this.tree.crackCrown();
+        }
         this.syncHud();
-        const what = gate.ring >= 2 ? `<span>a ring opens</span><b>+${gate.light} light</b>` : '<span>the crown can be broken</span>';
-        this.hud.toast(`<span>${gate.name}</span>${what}`, 'var(--gold-hi)', 4);
+        const last = gates[gates.length - 1];
+        const totalLight = gates.reduce((sum, g) => sum + g.light, 0);
+        const what = gates.length === 1
+          ? (last.ring >= 2 ? `<span>a ring opens</span><b>+${last.light} light</b>` : '<span>the crown can be broken</span>')
+          : totalLight > 0 ? `<span>${gates.length} gates open</span><b>+${totalLight} light</b>` : `<span>${gates.length} gates open</span>`;
+        this.hud.toast(`<span>${gates.map((g) => g.name).join(' · ')}</span>${what}`, 'var(--gold-hi)', 4);
       });
     }
-    gsap.delayedCall(gate ? 3 : 1, () => this.tips.check());
+    gsap.delayedCall(gates.length > 0 ? 3 : 1, () => this.tips.check());
   }
 
   // ───────────────────────────────────────────── loop

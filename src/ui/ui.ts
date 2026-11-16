@@ -9,8 +9,8 @@ import {
 import { TREES, TREE_ORDER } from '../data/trees';
 import { STAT_META, formatStat, type StatKey } from '../data/stats';
 import {
-  checkBuy, countable, currentTrial, forkSiblings, gateOf, isOwned, level, lightCap, lightUsed, needed, nextCost,
-  nodeState, ownedCount, refundOf, sealedBy, statsFor, unweaveBlock,
+  bossReady, checkBuy, countable, currentTrial, forkSiblings, gateOf, isOwned, keystonesOwned, level, lightCap, lightUsed,
+  needed, nextCost, nodeState, ownedCount, refundOf, sealedBy, statsFor, trialProgress, unweaveBlock, cascadePreview,
 } from '../systems/tree-logic';
 
 export function h<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', html = ''): HTMLElementTagNameMap[K] {
@@ -243,9 +243,16 @@ export class TreeHud {
     const t = currentTrial(tree, p);
     this.trial.classList.toggle('on', !!t && owned > 0);
     if (t) {
-      const best = p.trialBest[t.id] ?? 0;
-      const bestTxt = best > 0 && t.goal.kind !== 'boss' ? `<span class="best">best ${fmt(Math.floor(best))} / ${fmt(t.goal.n)}</span>` : '';
-      this.trial.innerHTML = `<span class="tk">${t.name}</span><span class="tt">${t.text}</span>${bestTxt}`;
+      if (t.goal.kind === 'boss' && !bossReady(tree, p)) {
+        const have = keystonesOwned(tree, p.levels), need = tree.bossKeystones ?? 2;
+        this.trial.innerHTML = `<span class="tk">${t.name}</span><span class="tt">Light ${need} keystones to summon it</span><span class="best">${have} / ${need}</span>`;
+      } else {
+        const best = p.trialBest[t.id] ?? 0;
+        const bestTxt = t.goal.kind === 'boss'
+          ? (p.heart > 0 ? `<span class="best">${Math.round(p.heart * 100)}% broken</span>` : '')
+          : (best > 0 ? `<span class="best">best ${fmt(Math.floor(best))} / ${fmt(t.goal.n)}</span>` : '');
+        this.trial.innerHTML = `<span class="tk">${t.name}</span><span class="tt">${t.text}</span>${bestTxt}`;
+      }
     }
 
     const touch = touchFirst();
@@ -341,16 +348,31 @@ export class Tooltip {
     if (def.mods.length && def.kind !== 'core') {
       const cur = statsFor(tree, p.levels);
       const nxt = statsFor(tree, { ...p.levels, [def.id]: Math.min(lvl + 1, def.maxLevel) });
+      const crown = tree.id === 'crown';
+      const labelOf = (k: StatKey) => {
+        if (!crown) return STAT_META[k].label;
+        switch (k) {
+          case 'lumenMult': return 'Gloam gain';
+          case 'lumenMultX': return 'Gloam multiplier';
+          case 'critLumen': return 'Bonus gloam on crit kill';
+          case 'satellites': return 'Ball lightning';
+          case 'satArc': return 'Ball lightning arcs';
+          default: return STAT_META[k].label;
+        }
+      };
+      const fmtVal = (k: StatKey, val: number) => k === 'freeze'
+        ? (val <= 0 ? 'None' : `${Math.max(2, 6 - Math.round(val))} hits`)
+        : formatStat(k, val);
       const seen = new Set<StatKey>();
       for (const m of def.mods) {
         if (seen.has(m.stat)) continue;
         seen.add(m.stat);
-        const a = formatStat(m.stat, cur[m.stat]);
-        const b = formatStat(m.stat, nxt[m.stat]);
+        const a = fmtVal(m.stat, cur[m.stat]);
+        const b = fmtVal(m.stat, nxt[m.stat]);
         // a curse's price reads red: the change goes the wrong way for the player
         const worse = STAT_META[m.stat].worse ? nxt[m.stat] > cur[m.stat] : nxt[m.stat] < cur[m.stat];
         const v = lvl >= def.maxLevel ? a : `${a}<span class="arrow">→</span><span class="next${worse ? ' worse' : ''}">${b}</span>`;
-        stats += leader(STAT_META[m.stat].label, v);
+        stats += leader(labelOf(m.stat), v);
       }
     }
 
@@ -367,8 +389,9 @@ export class Tooltip {
     if (by) req = `<div class="tt-gate"><span class="t">Fork · ${esc(by.name)} is lit</span>Unweave ${esc(by.name)} to choose this instead.</div>`;
     let fork = '';
     if (def.fork && lvl === 0 && st !== 'sealed') {
-      const other = forkSiblings(tree, def).map((n) => n.name).join(', ');
-      fork = `<div class="tt-note"><span class="t">Fork</span>Lighting this seals ${esc(other)}.</div>`;
+      const sibs = forkSiblings(tree, def);
+      const other = sibs.map((n) => `<b>${esc(n.name)}</b> — ${esc(n.desc)}`).join(' ');
+      fork = `<div class="tt-note"><span class="t">Fork</span>Lighting this seals ${other}</div>`;
     }
     const curse = def.drawback ? `<div class="tt-curse"><span class="t">The price</span>${def.drawback}</div>` : '';
 
@@ -402,8 +425,13 @@ export class Tooltip {
     if (tree.light && lvl > 0 && def.kind !== 'core') {
       const block = unweaveBlock(tree, def, p);
       const how = touchFirst() ? 'Hold' : 'Right-click';
-      if (block && typeof block === 'object') unweave = `<div class="tt-unweave">${esc(block.name)} grows from it, so it can't be unwoven.</div>`;
-      else if (!block) unweave = `<div class="tt-unweave">${how} to unweave: back comes ${costText(refundOf(def, lvl), tree)} and its light.</div>`;
+      if (block && typeof block === 'object') {
+        const cas = cascadePreview(tree, def, p);
+        const shift = !touchFirst() && cas.nodes.length > 1
+          ? ` Shift+right-click to unweave ${cas.nodes.length} stars (${costText(cas.refund, tree)}, ${cas.light} light).`
+          : '';
+        unweave = `<div class="tt-unweave">${esc(block.name)} grows from it.${shift}</div>`;
+      } else if (!block) unweave = `<div class="tt-unweave">${how} to unweave: back comes ${costText(refundOf(def, lvl), tree)} and its light.</div>`;
     }
 
     const kind = def.kind === 'core' ? 'origin' : `${KIND_NAMES[def.kind].toLowerCase()} · ${branch.toLowerCase()}`;
@@ -525,13 +553,13 @@ export class HarvestHud {
   }
 
   /** The trial this harvest is trying for, and how far it has got. */
-  setTrial(t: TrialDef | null, v: number) {
+  setTrial(t: TrialDef | null, v: number, waiting = false) {
     this.trialEl.classList.remove('done');
     this.trialEl.style.display = t ? '' : 'none';
     if (!t) return;
     const unit = t.goal.kind === 'gather' ? ` ${curName(this.tree, 'lumen')}` : t.goal.kind === 'hazards' ? ' hazards' : t.goal.kind === 'kills' ? ' shards' : '';
     this.trialEl.innerHTML = t.goal.kind === 'boss'
-      ? `<span>trial</span><b>${t.text.toLowerCase()}</b>`
+      ? `<span>trial</span><b>${waiting ? `light ${this.tree.bossKeystones ?? 0} keystones to wake the hollow heart` : t.text.toLowerCase()}</b>`
       : `<span>trial · ${t.name.toLowerCase()}</span><b>${fmt(Math.min(v, t.goal.n))} / ${fmt(t.goal.n)}${unit}</b>`;
   }
 
@@ -554,15 +582,29 @@ export class HarvestHud {
     if (key === this.bossKey) return;
     const was = this.bossKey;
     this.bossKey = key;
+    const q = <T extends HTMLElement>(sel: string) => this.bossEl.querySelector<T>(sel)!;
+    const fill = q('.bb-fill'), trail = q('.bb-trail');
     if (frac == null) {
       gsap.killTweensOf(this.bossEl);
       gsap.set(this.bossEl, { autoAlpha: 0 });
+      fill.style.transform = 'scaleX(1)';
+      trail.style.transition = 'none';
+      trail.style.transform = 'scaleX(1)';
+      void trail.offsetWidth;
+      trail.style.transition = '';
       return;
     }
-    if (!was) gsap.fromTo(this.bossEl, { autoAlpha: 0, y: 12 }, { autoAlpha: 1, y: 0, duration: 0.7, ease: 'expo.out' });
-    const q = <T extends HTMLElement>(sel: string) => this.bossEl.querySelector<T>(sel)!;
-    q('.bb-fill').style.transform = `scaleX(${frac})`;
-    q('.bb-trail').style.transform = `scaleX(${frac})`;
+    fill.style.transform = `scaleX(${frac})`;
+    if (!was) {
+      // snap the trail before the bar fades in so prior scars never animate as a sudden damage drop
+      trail.style.transition = 'none';
+      trail.style.transform = `scaleX(${frac})`;
+      void trail.offsetWidth;
+      trail.style.transition = '';
+      gsap.fromTo(this.bossEl, { autoAlpha: 0, y: 12 }, { autoAlpha: 1, y: 0, duration: 0.7, ease: 'expo.out' });
+    } else {
+      trail.style.transform = `scaleX(${frac})`;
+    }
     q('.bb-scar').style.width = `${scar * 100}%`;
     q('.pct').textContent = frac > 0 ? `${pct(frac)} left` : 'broken';
     const note = scar > 0.005
@@ -651,9 +693,18 @@ export class Summary {
     const A = curName(tree, 'lumen'), B = curName(tree, 'prism');
     let trialRow = '';
     if (trial) {
-      trialRow = r.trial
-        ? `<div class="sum-trial done"><span>trial passed</span><b>${trial.name}</b><span>${tree.trials && trial.ring ? 'a ring opens · +' + trial.light + ' light' : 'the crown can be broken'}</span></div>`
-        : `<div class="sum-trial"><span>trial · ${trial.name.toLowerCase()}</span><b>${trial.text}</b></div>`;
+      if (r.trial) {
+        trialRow = `<div class="sum-trial done"><span>trial passed</span><b>${trial.name}</b><span>${tree.trials && trial.ring ? 'a ring opens · +' + trial.light + ' light' : 'the crown can be broken'}</span></div>`;
+      } else if (trial.goal.kind === 'boss') {
+        const ready = bossReady(tree, p);
+        const sub = !ready
+          ? `Light ${tree.bossKeystones} keystones to summon it (${keystonesOwned(tree, p.levels)} / ${tree.bossKeystones})`
+          : r.bossWounds != null ? `${Math.round(r.bossWounds * 100)}% broken` : trial.text;
+        trialRow = `<div class="sum-trial"><span>trial · ${trial.name.toLowerCase()}</span><b>${sub}</b></div>`;
+      } else {
+        const got = Math.floor(trialProgress(trial, { lumen: r.lumen, kills: r.kills, hazards: r.hazards, boss: r.boss }));
+        trialRow = `<div class="sum-trial"><span>trial · ${trial.name.toLowerCase()}</span><b>${trial.text}</b><span>${fmt(got)} / ${fmt(trial.goal.n)} this harvest</span></div>`;
+      }
     }
     const rows = [
       r.prism > 0 ? leader(cap1(B), `${GLYPH.prism}+${fmt(r.prism)}`) : '',
@@ -686,13 +737,15 @@ export class Summary {
     this.wrap.classList.add('on');
     const lv = this.modal.querySelector('.lv') as HTMLElement;
     const o = { v: 0 };
-    gsap.timeline()
+    const tl = gsap.timeline()
       .fromTo(this.wrap, { opacity: 0 }, { opacity: 1, duration: 0.3 })
       .fromTo(this.modal, { y: 24, opacity: 0 }, { y: 0, opacity: 1, duration: 0.55, ease: 'expo.out' }, 0)
       .to(o, { v: r.lumen, duration: 1.1, ease: 'power3.out', onUpdate: () => { lv.textContent = fmt(Math.floor(o.v)); } }, 0.2)
-      .fromTo(this.modal.querySelector('.sum-trial'), { opacity: 0, y: 6 }, { opacity: 1, y: 0, duration: 0.5 }, 0.5)
-      .to(this.modal.querySelectorAll('.sum-rows .leader'), { opacity: 1, x: 0, stagger: 0.06, duration: 0.35, startAt: { x: -10 } }, 0.35)
-      .to(this.modal.querySelector('.record'), { opacity: 1, duration: 0.5 }, 1.2);
+      .to(this.modal.querySelectorAll('.sum-rows .leader'), { opacity: 1, x: 0, stagger: 0.06, duration: 0.35, startAt: { x: -10 } }, 0.35);
+    const sumTrial = this.modal.querySelector('.sum-trial');
+    if (sumTrial) tl.fromTo(sumTrial, { opacity: 0, y: 6 }, { opacity: 1, y: 0, duration: 0.5 }, 0.5);
+    const rec = this.modal.querySelector('.record');
+    if (rec) tl.to(rec, { opacity: 1, duration: 0.5 }, 1.2);
   }
 
   hide(): Promise<void> {
@@ -885,21 +938,29 @@ export class SettingsPanel {
           row('Interface size', choice('uiScale', UI_SIZES, String(s.uiScale))),
           row('Damage numbers', toggle('damageNumbers', s.damageNumbers)),
           row('Hints', toggle('hints', s.hints), 'Help lines under the harvest button and first-time tips.'),
-          row('Skip harvest summary', toggle('skipSummary', s.skipSummary), 'Go straight back to the Bloom; the result shows as a short line instead.'),
+          row('Skip harvest summary', toggle('skipSummary', s.skipSummary), 'Go straight back to the tree; the result shows as a short line instead.'),
         ].join('');
       case 'account':
         return this.account();
       case 'records': {
         const L = this.state.lifetime;
+        const cp = this.state.crown;
+        const crownRows = cp.runs > 0 || this.state.awakened ? `
+          <div class="rule"></div>
+          <div class="ledger-sm">
+            ${leader('The Hollow Crown', `${ownedCount(TREES.crown, cp.levels)} / ${countable(TREES.crown).length} stars`)}
+            ${leader('Crown harvests', fmt(cp.runs))}
+            ${leader('Best crown harvest', fmt(cp.bestRun))}
+          </div>` : '';
         return `<div class="ledger-sm">
           ${leader('Harvests', fmt(L.runs))}
           ${leader('Shards broken', fmt(L.shardsBroken))}
-          ${leader('Lumen gathered', fmt(L.lumenEarned))}
-          ${leader('Prism gathered', fmt(L.prismEarned))}
+          ${leader('Common light gathered', fmt(L.lumenEarned))}
+          ${leader('Rare light gathered', fmt(L.prismEarned))}
           ${leader('Best harvest', fmt(L.bestRun))}
           ${leader('Longest combo', fmt(L.bestCombo))}
           ${leader('Time under the stars', fmtTime(L.playTime))}
-        </div>
+        </div>${crownRows}
         <div class="rule"></div>
         <div class="danger-zone"><span class="note">Erase both trees, all their light and these records.</span><button class="text-btn danger reset">Begin anew</button></div>`;
       }
@@ -998,7 +1059,7 @@ export class Ending {
       <div class="stats">
         <div><b>${fmtTime(L.playTime)}</b><span>beneath the stars</span></div>
         <div><b>${roman(Math.max(1, p.runs))}</b><span>harvests</span></div>
-        <div><b>${fmt(L.shardsBroken)}</b><span>shards</span></div>
+        <div><b>${crown ? `${ownedCount(tree, p.levels)} / ${countable(tree).length}` : fmt(L.shardsBroken)}</b><span>${crown ? 'stars lit' : 'shards'}</span></div>
         <div><b>${fmt(crown ? p.bestRun : L.lumenEarned)}</b><span>${crown ? 'best harvest' : 'lumen'}</span></div>
       </div>
       <div class="ending-actions">

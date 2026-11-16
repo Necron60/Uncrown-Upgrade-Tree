@@ -1,7 +1,7 @@
 import gsap from 'gsap';
 import { LEGACY_TIPS, type GameState, type TreeProgress } from '../core/state';
-import type { NodeDef, TreeDef } from '../data/tree';
-import { currentTrial, isOwned, lightCap, lightUsed, nodeState, ownedCount, checkBuy, nextCost } from '../systems/tree-logic';
+import { lightCost, type NodeDef, type TreeDef } from '../data/tree';
+import { bossReady, currentTrial, isOwned, lightCap, lightUsed, nodeState, ownedCount, checkBuy, nextCost, unweaveBlock } from '../systems/tree-logic';
 import { h, touchFirst } from './ui';
 
 /** What tips can see of the game. */
@@ -109,7 +109,7 @@ const TIPS: TipDef[] = [
   },
   {
     id: 'crown-sigils', tree: 'crown', title: 'Sigils',
-    body: () => 'Only hazards, the shards that fight back, drop Sigils. The deeper stars ask for them.',
+    body: () => 'Hazards — and deep abyssal shards — drop Sigils. The outer stars ask for them.',
     when: (c) => c.p.prism > 0, at: (c) => ({ el: c.el.prism }),
   },
   {
@@ -119,9 +119,12 @@ const TIPS: TipDef[] = [
   },
   {
     id: 'crown-unweave', tree: 'crown', title: 'Unweave',
-    body: () => `${touchFirst() ? 'Hold' : 'Right-click'} a lit star to make it dark again. You get back three quarters of what it cost, and all of its light.`,
+    body: () => `${touchFirst() ? 'Hold' : 'Right-click'} a lit star to make it dark again${touchFirst() ? '' : ' (Shift+right-click to unweave a whole branch)'}. You get back three quarters of its gloam, and all of its sigils and light.`,
     when: (c) => lightUsed(c.tree, c.p.levels) >= lightCap(c.tree, c.p) - 1 && ownedCount(c.tree, c.p.levels) >= 3,
-    at: (c) => node(find(c, (n) => isOwned(c.p.levels, n.id) && n.kind !== 'core' && (c.tree.children[n.id] ?? []).every((k) => !isOwned(c.p.levels, k)))),
+    at: (c) => node(
+      find(c, (n) => lightCost(n) > 0 && unweaveBlock(c.tree, n, c.p) === null)
+      ?? find(c, (n) => unweaveBlock(c.tree, n, c.p) === null),
+    ),
   },
   {
     id: 'crown-fork', tree: 'crown', title: 'Forks',
@@ -137,12 +140,12 @@ const TIPS: TipDef[] = [
   },
   {
     id: 'crown-heart', tree: 'crown', title: 'The Hollow Heart',
-    body: () => 'Every gate is open. From now on the heart of the crown rises in every harvest: shatter it to pass the last trial.',
-    when: (c) => currentTrial(c.tree, c.p)?.goal.kind === 'boss', at: (c) => ({ el: c.el.harvest }),
+    body: () => 'Every gate is open. From now on the heart of the crown rises in every harvest: shatter it to unlock Uncrown.',
+    when: (c) => bossReady(c.tree, c.p), at: (c) => ({ el: c.el.harvest }),
   },
   {
     id: 'crown-finale', tree: 'crown', title: 'Uncrown',
-    body: () => 'The heart is broken. With two keystones lit, the crown itself can be broken.',
+    body: () => 'The heart is broken. Gather the light and sigils to break the crown itself.',
     when: (c) => checkBuy(c.tree, c.tree.map[c.tree.finale], c.p)?.reason !== 'gated' && c.p.trials.includes('heart') && !c.p.awakened,
     at: (c) => ({ el: c.el.awaken }),
   },

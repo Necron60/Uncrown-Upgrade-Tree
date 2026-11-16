@@ -9,7 +9,7 @@ import { CROWN } from '../src/data/trees';
 import { lightCost, type Branch, type NodeDef } from '../src/data/tree';
 import { newProgress, type TreeProgress } from '../src/core/state';
 import {
-  buy, checkBuy, currentTrial, isOwned, level, lightCap, lightUsed, nextCost, spentOn, statsFor, trialMet, trialProgress, unweave, unweaveBlock,
+  bossReady, buy, checkBuy, currentTrial, isOwned, level, lightCap, lightUsed, nextCost, spentOn, statsFor, trialMet, trialProgress, unweave, unweaveBlock,
 } from '../src/systems/tree-logic';
 import type { Stats } from '../src/data/stats';
 import { HAZARD_RULES } from '../src/data/hazards';
@@ -33,14 +33,17 @@ export function simulateCrownRun(st: Stats, depth: number, boss: boolean, wounds
   let remaining = st.duration, overtime = 0, inOT = false, otUsed = false;
   let t = 0, spawnAcc = 0, pulseAcc = 0, satAcc = 0, strikeAcc = 0, frenzy = 0, bossT = boss ? 2.6 : -1;
   let shards: S[] = [];
-  let lumen = 0, prism = 0, kills = 0, hazards = 0, bossKills = 0, stolen = 0, timeBonuses = 0;
+  let lumen = 0, prism = 0, kills = 0, hazards = 0, bossKills = 0, stolen = 0, timeBonuses = 0, devourBonuses = 0, pulseCount = 0;
   const killTimes: number[] = [];
   let heartDown = false;
+  let phase66 = wounds >= 0.34, phase33 = wounds >= 0.67;
   const hazardChance = HAZARD_RULES.chance(depth, st.hazardMult);
   const pickTier = () => {
     const r = rnd();
-    if (st.tier3 > 0) return r < 0.22 ? 2 : r < 0.54 ? 1 : 0;
-    if (st.tier2 > 0) return r < 0.32 ? 1 : 0;
+    const t3 = st.tier3 > 0 ? 0.24 : depth >= 3 ? 0.1 : 0;
+    const t2 = st.tier2 > 0 ? 0.34 : depth >= 2 ? 0.16 : 0;
+    if (r < t3) return 2;
+    if (r < t3 + t2) return 1;
     return 0;
   };
   const make = (type: string): S => {
@@ -65,10 +68,19 @@ export function simulateCrownRun(st: Stats, depth: number, boss: boolean, wounds
     }
     shards.push(make(type));
   };
-  const pulseDmg = () => st.damage * st.damageMult * (inOT ? 2 : 1);
-  const addTime = (a: number) => {
-    a *= Math.pow(0.93, timeBonuses);
-    if (a >= 0.05 && !inOT) { remaining += a; timeBonuses++; }
+  const recentCombo = () => {
+    const recent = killTimes.filter((k) => t - k < st.comboWindow).length;
+    return st.comboPerKill > 0 || st.comboDmg > 0 ? Math.min(recent, Math.round(st.comboCap)) : 0;
+  };
+  const pulseDmg = () => st.damage * st.damageMult * (inOT ? 2 : 1) * (1 + recentCombo() * st.comboDmg);
+  const burnMult = () => 1 + Math.max(0, st.burnChance - 1) * 0.5;
+  const addTime = (a: number, devour = false) => {
+    const n = devour ? devourBonuses : timeBonuses;
+    a *= Math.pow(0.93, n);
+    if (a >= 0.05 && !inOT) {
+      remaining += a;
+      if (devour) devourBonuses++; else timeBonuses++;
+    }
   };
   const kill = (s: S, crit: boolean, executed: boolean, depthN: number) => {
     s.hp = -1e9;
@@ -76,8 +88,7 @@ export function simulateCrownRun(st: Stats, depth: number, boss: boolean, wounds
     killTimes.push(t);
     if (s.hazard) hazards++;
     if (s.type === 'boss') bossKills++;
-    const recent = killTimes.filter((k) => t - k < st.comboWindow).length;
-    const combo = st.comboPerKill > 0 ? Math.min(recent, Math.round(st.comboCap)) : 0;
+    const combo = recentCombo();
     let typeMult = 1;
     if (s.type === 'gold') typeMult = st.goldValue;
     if (s.type === 'time' && st.goldenHour > 0) typeMult = 3;
@@ -85,22 +96,24 @@ export function simulateCrownRun(st: Stats, depth: number, boss: boolean, wounds
     const cb = crit || executed ? 1 + st.critLumen : 1;
     lumen += s.value * st.lumenMult * st.lumenMultX * typeMult * (1 + combo * st.comboPerKill) * cb;
     if (s.hazard) {
-      // every hazard broken cracks the Hollow Heart
+      // every hazard broken cracks the Hollow Heart and strips up to 3 void wards
       const heart = shards.find((x) => x.type === 'boss' && x.hp > 0);
       if (heart) {
+        if (heart.wards > 0) heart.wards = Math.max(0, heart.wards - 3);
         heart.hp -= heart.max * HAZARD_RULES.heartCrack;
         if (heart.hp <= 0) kill(heart, false, false, 0);
       }
       prism += Math.floor(st.sigilChance) + (rnd() < st.sigilChance % 1 ? 1 : 0);
       if (st.bloodlust > 0) frenzy = 4;
-      if (st.devour > 0) addTime(st.devour);
+      if (st.devour > 0) addTime(st.devour, true);
     }
     if (s.type === 'boss') {
-      prism += 20;
+      prism += 50;
       // without its heart, everything left in the void shatters, and the night ends
       for (const o of shards) if (o.hp > 0 && o !== s) kill(o, false, false, 3);
       heartDown = true;
     }
+    if (s.tier === 2 && s.type !== 'boss' && rnd() < 0.4) prism += 1;
     if (s.type === 'gold' && st.goldSigil > 0 && rnd() < st.goldSigil) prism += 1;
     if (s.type === 'time') addTime(st.timeShardBonus);
     if (s.type === 'gold' && st.goldenHour > 0) addTime(0.3);
@@ -110,29 +123,45 @@ export function simulateCrownRun(st: Stats, depth: number, boss: boolean, wounds
       for (const o of shards) if (lit < 3 && o.hp > 0 && rnd() < near(120)) { o.burn = Math.max(o.burn, st.burnTime); lit++; }
     }
     if (s.frozen > 0 && st.frostNova > 0 && depthN < 3) {
-      const amount = st.frostNova * Math.max(s.max * 0.6, pulseDmg() * 3);
-      for (const o of shards) if (o.hp > 0 && rnd() < near(110)) hit(o, amount, false, { dot: true, depth: depthN + 1 });
+      const amount = st.frostNova * Math.max(s.max * 0.75, pulseDmg() * 3.5);
+      for (const o of shards) if (o.hp > 0 && rnd() < near(135)) hit(o, amount, false, { dot: true, depth: depthN + 1 });
     }
   };
   const hit = (s: S, amount: number, canCrit: boolean, o: { lens?: boolean; lightning?: boolean; dot?: boolean; depth?: number } = {}) => {
     if (s.hp <= 0) return;
-    if (s.wards > 0 && !o.dot) { s.wards = Math.max(0, s.wards - Math.max(1, Math.round(st.wardBreak))); return; }
+    if (s.wards > 0 && !o.dot) {
+      s.wards = Math.max(0, s.wards - Math.max(1, Math.round(st.wardBreak)));
+      if (s.wards === 0 && st.wardShatter > 0) {
+        const near = (R: number) => Math.min(1, (Math.PI * (R + s.r) ** 2 / AREA) * 1.6);
+        const burst = st.wardShatter * pulseDmg();
+        hit(s, burst, false, { dot: true, depth: (o.depth ?? 0) + 1 });
+        for (const x of shards) if (x !== s && x.hp > 0 && rnd() < near(120)) hit(x, burst * 0.6, false, { dot: true, depth: (o.depth ?? 0) + 1 });
+      }
+      return;
+    }
     let m = 1;
     if (s.burn > 0) m *= 1 + st.burnAmp;
+    if (s.chill > 0.01) m *= 1 + s.chill * 0.6;
     if (s.frozen > 0) m *= st.frozenMult;
+    if (s.hazard) m *= 1 + st.hazardDmg;
     if (frenzy > 0) m *= 1 + st.bloodlust;
+    if (s.type === 'boss' && st.execute > 0 && s.hp <= s.max * 0.4) m *= 1 + st.execute * 1.5;
     if (o.lightning && st.supercon > 0 && (s.chill > 0.05 || s.frozen > 0)) m *= 2;
     amount *= m;
     let crit = false;
     if (canCrit && rnd() < st.critChance) { crit = true; amount *= st.critMult; }
     s.hp -= amount;
+    if (s.type === 'boss' && s.hp > 0) {
+      if (!phase66 && s.hp <= s.max * 0.66) { phase66 = true; s.wards = 6; spawn('dimmer'); spawn('warded'); }
+      if (!phase33 && s.hp <= s.max * 0.33) { phase33 = true; s.wards = 6; spawn('thief'); spawn('skittish'); }
+    }
     if (s.hp <= 0) return kill(s, crit, false, o.depth ?? 0);
     if (st.execute > 0 && s.type !== 'boss' && s.hp <= s.max * st.execute) return kill(s, crit, true, o.depth ?? 0);
     if (o.dot) return;
     if (st.chill > 0) s.chill = Math.min(0.85, s.chill + st.chill);
-    if (st.freeze > 0 && s.frozen <= 0 && s.type !== 'boss' && ++s.frost >= Math.max(2, 7 - Math.round(st.freeze))) {
+    if (st.freeze > 0 && s.frozen <= 0 && ++s.frost >= Math.max(2, 6 - Math.round(st.freeze))) {
       s.frost = 0;
-      s.frozen = st.freezeTime;
+      s.frozen = st.freezeTime * (s.type === 'boss' ? 0.6 : 1);
       if (s.burn > 0 && st.thermal > 0) hit(s, st.thermal * pulseDmg(), false, { dot: true });
     }
     if (o.lens && st.burnChance > 0 && rnd() < st.burnChance) {
@@ -174,12 +203,16 @@ export function simulateCrownRun(st: Stats, depth: number, boss: boolean, wounds
     }
     spawnAcc += st.spawnRate * dt;
     while (spawnAcc >= 1) { spawnAcc -= 1; spawn(); for (let c = 0; c < Math.round(st.cluster); c++) spawn(); }
-    if (shards.some((s) => s.type === 'boss' && s.hp > 0) && rnd() < dt / 3.2) spawn('warded');
+    if (shards.some((s) => s.type === 'boss' && s.hp > 0) && rnd() < dt / 3.2) spawn(HAZ[Math.floor(rnd() * 4)]);
     const dimmers = shards.filter((s) => s.type === 'dimmer' && s.hp > 0).length;
     const R = st.radius * (1 + st.radiusGrowth * t) * Math.max(HAZARD_RULES.dimMin, Math.pow(HAZARD_RULES.dimPer, dimmers));
     pulseAcc += dt;
     while (pulseAcc >= 1 / st.pulseRate) {
       pulseAcc -= 1 / st.pulseRate;
+      pulseCount++;
+      if (st.tidalSurge > 0 && pulseCount % 4 === 0) {
+        for (const s of targets(R * 2.2)) hit(s, st.tidalSurge * pulseDmg(), true, { lens: true });
+      }
       for (const s of targets(R)) {
         hit(s, pulseDmg(), true, { lens: true });
         if (st.arcChance > 0 && rnd() < st.arcChance) {
@@ -213,7 +246,7 @@ export function simulateCrownRun(st: Stats, depth: number, boss: boolean, wounds
         if (!a.length) continue;
         const s = a.sort((x, y) => x.hp - y.hp)[0];
         hit(s, pulseDmg() * 0.8 * st.satDamage, st.satCrit > 0);
-        if (st.satArc > 0 && st.arcChance > 0 && rnd() < st.arcChance) {
+        if (st.satArc > 0 && rnd() < Math.max(0.35, st.arcChance)) {
           const b = alive();
           if (b.length) hit(b[Math.floor(rnd() * b.length)], pulseDmg() * 0.6, true, { lightning: true });
         }
@@ -225,7 +258,7 @@ export function simulateCrownRun(st: Stats, depth: number, boss: boolean, wounds
       s.chill = Math.max(0, s.chill - dt * 0.3);
       if (s.burn > 0) {
         s.burn -= dt;
-        hit(s, st.burnDps * pulseDmg() * dt, false, { dot: true });
+        hit(s, st.burnDps * burnMult() * pulseDmg() * dt, false, { dot: true });
       }
       if (s.type === 'thief' && s.hp > 0 && (s.fuse -= dt) <= 0) {
         s.hp = -1e9; // fled
@@ -282,7 +315,7 @@ export function playthrough(focus: Branch[], fork: 'a' | 'b', s0 = 99, maxRuns =
   while (runs < maxRuns && !p.awakened) {
     const st = statsFor(CROWN, p.levels);
     const trial = currentTrial(CROWN, p);
-    const boss = !p.trials.includes('heart') && CROWN.trials!.every((t) => t.goal.kind === 'boss' || p.trials.includes(t.id));
+    const boss = bossReady(CROWN, p);
     const r = simulateCrownRun(st, p.trials.length, boss, p.heart);
     if (boss) p.heart = Math.max(p.heart, r.bossFrac);
     runs++;
@@ -320,4 +353,76 @@ export function playthrough(focus: Branch[], fork: 'a' | 'b', s0 = 99, maxRuns =
     }
   }
   return { runs, time, milestones, unwoven, plateau, late, p };
+}
+
+/**
+ * A player who spreads light wide across several branches, synergies, and Ring 4 forks
+ * instead of rushing two Ring 5 keystones (testing 0-keystone and 1-keystone completion).
+ */
+export function widePlaythrough(branches: Branch[], maxKeystones: 0 | 1, fork: 'a' | 'b', s0 = 99, maxRuns = 900) {
+  reseed(s0);
+  const p: TreeProgress = newProgress('crown');
+  const set = new Set<Branch>(branches);
+  const inFocus = (n: NodeDef) => (n.branch2 ? set.has(n.branch) && set.has(n.branch2) : set.has(n.branch));
+  const allowed = (n: NodeDef) => {
+    if (n.kind === 'awaken' || n.kind === 'core') return false;
+    if (n.kind === 'keystone' && (maxKeystones === 0 || n.branch !== branches[0])) return false;
+    if (n.fork && !n.id.endsWith(`_4${fork}`)) return false;
+    return n.ring === 1 || inFocus(n);
+  };
+  const ess = new Set(maxKeystones > 0 ? essentials([branches[0]], fork) : []);
+  let runs = 0, time = 0, unwoven = 0;
+  const free = () => lightCap(CROWN, p) - lightUsed(CROWN, p.levels);
+  const rank = (n: NodeDef) => (set.has(n.branch) ? (n.ring >= 3 ? 3 : 2) : 0);
+  const makeRoom = (need: number) => {
+    if (free() >= need) return true;
+    const sim: TreeProgress = { ...p, levels: { ...p.levels } };
+    const order: NodeDef[] = [];
+    while (lightCap(CROWN, sim) - lightUsed(CROWN, sim.levels) < need) {
+      const opts = CROWN.nodes.filter((n) => isOwned(sim.levels, n.id) && !ess.has(n.id) && n.kind !== 'keystone' && n.kind !== 'synergy' && !n.fork && lightCost(n) > 0 && unweaveBlock(CROWN, n, sim) === null)
+        .sort((a, b) => rank(a) - rank(b) || (spentOn(a, level(sim.levels, a.id)).lumen ?? 0) - (spentOn(b, level(sim.levels, b.id)).lumen ?? 0));
+      if (!opts.length) return false;
+      unweave(CROWN, opts[0], sim);
+      order.push(opts[0]);
+    }
+    for (const n of order) { unweave(CROWN, n, p); unwoven++; }
+    return true;
+  };
+  while (runs < maxRuns && !p.awakened) {
+    const st = statsFor(CROWN, p.levels);
+    const trial = currentTrial(CROWN, p);
+    const boss = bossReady(CROWN, p);
+    const r = simulateCrownRun(st, p.trials.length, boss, p.heart);
+    if (boss) p.heart = Math.max(p.heart, r.bossFrac);
+    runs++;
+    time += r.duration + 10;
+    p.lumen += r.lumen;
+    p.prism += r.prism;
+    if (trial && trialMet(trial, r)) p.trials.push(trial.id);
+    for (let guard = 0; guard < 200; guard++) {
+      const fin = CROWN.map[CROWN.finale];
+      if (checkBuy(CROWN, fin, p) === null) { buy(CROWN, fin, p); p.awakened = true; break; }
+      const needKeystone = maxKeystones > 0 && CROWN.map[`${branches[0]}_5`];
+      const keyTarget = needKeystone && !isOwned(p.levels, needKeystone.id) ? needKeystone : null;
+      const reserve = keyTarget && p.trials.includes('gate_5') ? lightCost(keyTarget) : 0;
+      const high = (keyTarget && checkBuy(CROWN, keyTarget, p)?.reason === 'dark'
+        && (nextCost(keyTarget, p.levels).lumen ?? 0) <= p.lumen && (nextCost(keyTarget, p.levels).prism ?? 0) <= p.prism)
+        ? keyTarget
+        : CROWN.nodes.find((n) => reserve === 0 && allowed(n) && (n.kind === 'keystone' || n.kind === 'synergy')
+          && checkBuy(CROWN, n, p)?.reason === 'dark'
+          && (nextCost(n, p.levels).lumen ?? 0) <= p.lumen && (nextCost(n, p.levels).prism ?? 0) <= p.prism);
+      if (high && makeRoom(lightCost(high))) { buy(CROWN, high, p); continue; }
+      const opts = CROWN.nodes.filter((n) => allowed(n) && checkBuy(CROWN, n, p) === null
+        && (ess.has(n.id) || isOwned(p.levels, n.id) || lightCost(n) === 0 || free() - lightCost(n) >= reserve))
+        .map((n) => {
+          const c = nextCost(n, p.levels);
+          const pri = (n.kind === 'keystone' || n.kind === 'synergy' ? 0.25 : n.fork || n.kind === 'major' ? 0.45 : n.ring === 1 && !set.has(n.branch) ? 1.5 : 1) * (ess.has(n.id) ? 0.4 : 1);
+          return { n, c: ((c.lumen ?? 0) + (c.prism ?? 0) * 3000) * pri };
+        })
+        .sort((a, b) => a.c - b.c);
+      if (!opts.length) break;
+      buy(CROWN, opts[0].n, p);
+    }
+  }
+  return { runs, time, unwoven, p };
 }

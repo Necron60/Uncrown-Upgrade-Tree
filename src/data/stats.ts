@@ -67,6 +67,10 @@ export interface Stats {
   hellfire: number; // hazards rise already burning
   goldSigil: number; // chance a golden shard holds a sigil
   shardHp: number; // how tough every shard is
+  hazardDmg: number; // bonus damage multiplier against hazards
+  comboDmg: number; // bonus damage multiplier per combo stack
+  tidalSurge: number; // every 4th lens pulse unleashes a wide tidal wave (damage in pulses)
+  wardShatter: number; // breaking a shard's final ward triggers a shock burst (damage in pulses)
 }
 
 export type StatKey = keyof Stats;
@@ -138,6 +142,10 @@ export const BASE_STATS: Stats = {
   hellfire: 0,
   goldSigil: 0,
   shardHp: 1,
+  hazardDmg: 0,
+  comboDmg: 0,
+  tidalSurge: 0,
+  wardShatter: 0,
 };
 
 /** A per-level modifier. Final stat = (base + Σadd·L) · Π(mul^L). */
@@ -217,6 +225,10 @@ export const STAT_META: Record<StatKey, { label: string; format: StatFormat; wor
   hellfire: { label: 'Hellfire', format: 'flag' },
   goldSigil: { label: 'Sigils in golden shards', format: 'pct' },
   shardHp: { label: 'Shard toughness', format: 'x', worse: true },
+  hazardDmg: { label: 'Damage to hazards', format: 'pct' },
+  comboDmg: { label: 'Damage per combo stack', format: 'pct' },
+  tidalSurge: { label: 'Tidal surge', format: 'x' },
+  wardShatter: { label: 'Ward shatter burst', format: 'x' },
 };
 
 export function formatStat(key: StatKey, v: number): string {

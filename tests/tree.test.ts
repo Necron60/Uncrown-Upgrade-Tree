@@ -5,7 +5,8 @@ import { BASE_STATS, STAT_META, type StatKey } from '../src/data/stats';
 import { polar } from '../src/core/math';
 import { LEGACY_TIPS, defaultSettings, effectiveMotion, newGame, normalizeSettings, parseSave } from '../src/core/state';
 import {
-  buy, costAt, nodeState, statsFor, checkBuy, needed, lightCap, lightUsed, unweave, unweaveBlock, currentTrial, trialMet,
+  bossReady, buy, cascadePreview, costAt, nodeState, statsFor, checkBuy, needed, lightCap, lightUsed,
+  unweave, unweaveBlock, unweaveCascade, currentTrial, trialMet,
 } from '../src/systems/tree-logic';
 
 const NODE_MAP = BLOOM.map;
@@ -236,20 +237,52 @@ describe('the Hollow Crown', () => {
     expect(lightCost(C.ember_5)).toBe(3);
   });
 
-  it('the finale needs two keystones and the Hollow Heart broken', () => {
+  it('the finale can be bought by any build once the Hollow Heart is broken', () => {
     const p = rich();
     p.trials = CROWN.trials!.filter((t) => t.goal.kind !== 'boss').map((t) => t.id);
-    p.levels = { crown: 1, ember_5: 1, storm_5: 1 };
+    p.levels = { crown: 1, ember_1: 1, frost_2b: 1 };
     expect(checkBuy(CROWN, C.uncrown, p)).toEqual({ ok: false, reason: 'gated' });
     p.trials.push('heart');
     expect(checkBuy(CROWN, C.uncrown, p)).toBeNull();
-    p.levels = { crown: 1, ember_5: 1 };
+    p.levels = {};
     expect(checkBuy(CROWN, C.uncrown, p)).toEqual({ ok: false, reason: 'locked' });
   });
 
   it('its base stats are its own', () => {
     expect(statsFor(CROWN, { crown: 1 }).radius).toBe(52);
     expect(statsFor(BLOOM, { seed: 1 }).radius).toBe(BASE_STATS.radius);
+  });
+
+  it('unweaving returns all sigils and supports cascading branches', () => {
+    const p = rich();
+    p.trials = CROWN.trials!.filter((t) => t.goal.kind !== 'boss').map((t) => t.id);
+    p.levels = { crown: 1, ember_1: 1, ember_2a: 1, ember_2b: 1, ember_3a: 1, ember_3b: 1, ember_4a: 1 };
+    const beforeP = p.prism;
+    // ember_4a can stay lit via ember_3b if ember_3a is unwoven; unweaving ember_1 drops the whole ember branch
+    const cas = cascadePreview(CROWN, C.ember_1, p);
+    expect(cas.nodes.map((n) => n.id)).toContain('ember_4a');
+    expect(cas.nodes.map((n) => n.id)).toContain('ember_1');
+    const r = unweaveCascade(CROWN, C.ember_1, p);
+    expect(r.ok).toBe(true);
+    expect(lightUsed(CROWN, p.levels)).toBe(0);
+    expect(p.prism - beforeP).toBe(costAt(C.ember_4a, 0).prism);
+  });
+
+  it('the Hollow Heart wakes once all ring gates are open, even without keystones', () => {
+    const p = rich();
+    p.levels = { crown: 1, ember_1: 1 };
+    expect(bossReady(CROWN, p)).toBe(false);
+    p.trials = CROWN.trials!.filter((t) => t.goal.kind !== 'boss').map((t) => t.id);
+    expect(bossReady(CROWN, p)).toBe(true);
+    p.trials.push('heart');
+    expect(bossReady(CROWN, p)).toBe(false);
+  });
+
+  it('unsealed rings become visible across all branches for light planning', () => {
+    const p = rich();
+    expect(nodeState(CROWN, C.frost_2a, p)).toBe('silhouette');
+    p.trials.push('gate_2');
+    expect(nodeState(CROWN, C.frost_2a, p)).toBe('locked');
   });
 });
 

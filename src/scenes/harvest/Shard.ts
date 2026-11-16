@@ -273,6 +273,11 @@ export class Shard {
       this.ice.alpha = this.frozen > 0 ? 0.6 + Math.sin(this.t * 3) * 0.05 : this.chill * 0.35;
     } else if (this.ice) this.ice.visible = false;
     // wards: plates of light around it, one per ward
+    if (this.wards > 0 && !this.wardG) {
+      this.wardG = new Graphics();
+      this.wardG.blendMode = 'add';
+      this.c.addChild(this.wardG);
+    }
     if (this.wardG && this.drawnWards !== this.wards) {
       this.drawnWards = this.wards;
       const g = this.wardG;
@@ -286,7 +291,10 @@ export class Shard {
       if (n) g.stroke({ width: 3, color: 0xe6ecff, alpha: 0.9, cap: 'round' });
       if (n) g.circle(0, 0, rr).stroke({ width: 9, color: 0xc8d4ff, alpha: 0.08 });
     }
-    if (this.wardG) this.wardG.rotation += dt * 0.7;
+    if (this.wardG) {
+      this.wardG.visible = this.wards > 0;
+      this.wardG.rotation += dt * 0.7;
+    }
     // a thief's fuse burns down around it, faster and brighter as it is about to flee
     if (this.timerG && this.fuseMax > 0) {
       const g = this.timerG;
@@ -294,8 +302,13 @@ export class Shard {
       const f = Math.max(0, this.fuse / this.fuseMax);
       const rr = this.r + 9;
       const a0 = -Math.PI / 2;
-      const hot = f < 0.33 ? 0.6 + 0.4 * Math.sin(this.t * 24) : 0.85;
-      g.moveTo(Math.cos(a0) * rr, Math.sin(a0) * rr).arc(0, 0, rr, a0, a0 + TAU * f).stroke({ width: 2.5, color: 0xff5470, alpha: hot, cap: 'round' });
+      const urgent = this.fuse < 1.8;
+      const hot = urgent ? 0.65 + 0.35 * Math.sin(this.t * 28) : f < 0.33 ? 0.6 + 0.4 * Math.sin(this.t * 24) : 0.85;
+      g.moveTo(Math.cos(a0) * rr, Math.sin(a0) * rr).arc(0, 0, rr, a0, a0 + TAU * f).stroke({ width: urgent ? 3.5 : 2.5, color: 0xff5470, alpha: hot, cap: 'round' });
+      if (urgent) {
+        const pulseR = rr + 5 + ((this.t * 3) % 1) * 14;
+        g.circle(0, 0, pulseR).stroke({ width: 1.5, color: 0xff3355, alpha: (1 - ((this.t * 3) % 1)) * 0.7 });
+      }
     }
   }
 
@@ -331,6 +344,27 @@ export class Shard {
     if (frac > 0) {
       g.moveTo(Math.cos(a0) * rr, Math.sin(a0) * rr).arc(0, 0, rr, a0, a0 + TAU * frac)
         .stroke({ width: this.type === 'boss' ? 4 : 3, color: this.big ? 0xff8fa3 : 0xffffff, alpha: 0.9, cap: 'round' });
+    }
+    // persistent crimson fracture seams across the Hollow Heart as it wears down
+    if (this.type === 'boss') {
+      const dmg = Math.max(this.scar, 1 - frac);
+      if (dmg > 0.05) {
+        const lines: [number, number, number, number][] = [
+          [-0.08, -0.82, 0.14, -0.32], [0.14, -0.32, -0.1, 0.18], [-0.1, 0.18, 0.12, 0.78],
+          [0.14, -0.32, 0.58, -0.45], [-0.1, 0.18, -0.62, 0.32], [0.05, 0.42, 0.55, 0.52],
+        ];
+        const show = Math.min(lines.length, Math.ceil(dmg * lines.length));
+        for (let i = 0; i < show; i++) {
+          const [x0, y0, x1, y1] = lines[i];
+          g.moveTo(x0 * this.r, y0 * this.r).lineTo(x1 * this.r, y1 * this.r);
+        }
+        g.stroke({ width: 3.5, color: 0xff2850, alpha: 0.45, cap: 'round' });
+        for (let i = 0; i < show; i++) {
+          const [x0, y0, x1, y1] = lines[i];
+          g.moveTo(x0 * this.r, y0 * this.r).lineTo(x1 * this.r, y1 * this.r);
+        }
+        g.stroke({ width: 1.4, color: 0xffd0da, alpha: 0.9, cap: 'round' });
+      }
     }
   }
 

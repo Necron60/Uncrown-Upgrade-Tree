@@ -9,7 +9,7 @@ import { Particles } from '../render/particles';
 import { textures } from '../render/textures';
 import { audio } from '../systems/audio';
 import {
-  canAfford, isOwned, level, nextCost, nodeState, pathToSeed, type BuyResult, type UnweaveResult,
+  canAfford, isOwned, level, nextCost, nodeState, pathToSeed, type BuyResult, type CascadeUnweaveResult, type UnweaveResult,
 } from '../systems/tree-logic';
 import type { Game } from '../game/Game';
 import { Camera } from './tree/Camera';
@@ -571,13 +571,13 @@ export class TreeScene {
       const delta = e.deltaMode === 1 ? e.deltaY * 30 : e.deltaY;
       this.cam.zoomAt(e.clientX, e.clientY, Math.exp(-delta * 0.0016));
     }, { passive: false });
-    // right-click a lit star to unweave it (trees with limited light)
+    // right-click a lit star to unweave it (Shift+right-click unweaves dependent stars too)
     el.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       if (!this.view.visible || !this.inputEnabled || !this.tree.light) return;
       this.updateHover(e.clientX, e.clientY);
       const nv = this.hovered;
-      if (nv && (nv.state === 'owned' || nv.state === 'maxed')) this.tryUnweave(nv);
+      if (nv && (nv.state === 'owned' || nv.state === 'maxed')) this.tryUnweave(nv, e.shiftKey);
     });
     el.addEventListener('dblclick', (e) => {
       if (!this.view.visible || !this.inputEnabled) return;
@@ -828,7 +828,7 @@ export class TreeScene {
     const parts: string[] = [];
     if (spent.lumen) parts.push(`-${fmt(spent.lumen)}`);
     if (spent.prism) parts.push(`-${fmt(spent.prism)}◆`);
-    if (parts.length) this.floatText(nv.x, nv.y - nv.r - 18, parts.join('  '), 0xffd77a, 17);
+    if (parts.length) this.floatText(nv.x, nv.y - nv.r - 18, parts.join('  '), this.tree.currency.lumen.color, 17);
 
     if (inbound.length) {
       // light races in from the lit tree; the node ignites when it lands
@@ -997,6 +997,13 @@ export class TreeScene {
     const lit = [...this.nodes.values()].filter((n) => n.visible);
     const fs = Math.max(0.25, m.flashes);
     const keystones = this.tree.keystones.filter((k) => isOwned(this.prog.levels, k));
+    const traceSources = keystones.length ? keystones
+      : [...this.nodes.values()]
+          .filter((n) => n.def.kind !== 'core' && isOwned(this.prog.levels, n.def.id)
+            && !(this.tree.children[n.def.id] ?? []).some((c) => isOwned(this.prog.levels, c)))
+          .sort((a, b) => b.def.ring - a.def.ring)
+          .slice(0, 6)
+          .map((n) => n.def.id);
     const branchColors = this.tree.branches.map((b) => BRANCH_COLORS[b]);
 
     // 1 ─ the lights go out: everything you grew sinks to embers in a near-black void
@@ -1035,7 +1042,7 @@ export class TreeScene {
       for (const e of this.edges) gsap.to(e, { dim: 0, duration: 0.8 });
       await wait(0.9);
     } else {
-      await Promise.all(keystones.map((k, j) => new Promise<void>((res) => {
+      await Promise.all(traceSources.map((k, j) => new Promise<void>((res) => {
         const ks = this.nodes.get(k)!;
         gsap.delayedCall(j * 0.12, () => {
           relight(ks, j);
@@ -1077,13 +1084,17 @@ export class TreeScene {
     }
     await wait(1.4);
 
-    // 4 ─ dawn: the seed bursts and its light dissolves the darkness for good
-    this.game.flash(1, 0.12, 1.8);
+    // 4 ─ dawn: the seed (or broken crown) bursts and its light dissolves the darkness for good
+    const crown = this.tree.id === 'crown';
+    const dawnGlow = crown ? 0xe0d6ff : 0xffe0a0;
+    const dawnPal = crown ? [0xffffff, 0xe0d6ff, 0xff8aa0] : [0xffffff, 0xffe0a0, 0xfff6dd];
+    this.game.flash(1, 0.12, 1.8, crown ? '#eee6ff' : '#f4f7ff');
     this.game.shake.add(0.9);
     this.shockwave(0, 0, 40, 1.8);
-    this.fx.emit({ x: 0, y: 0, texture: tex.spark, count: 260, color: [0xffffff, this.tree.id === 'crown' ? 0xe0d6ff : 0xffe0a0, ...branchColors], speed: [300, 1500], life: [0.6, 1.8], size: [0.4, 0.9], drag: 1.6, stretch: 0.0025 });
-    this.fx.emit({ x: 0, y: 0, texture: tex.star4, count: 80, color: [0xffffff, 0xffe0a0], speed: [60, 600], life: [1, 2.4], size: [0.3, 0.7], spin: [-3, 3], drag: 1.2 });
-    for (let i = 0; i < 4; i++) gsap.delayedCall(i * 0.15, () => this.shockRing(0, 0, 60, 900 + i * 300, pick([0xffffff, 0xffe0a0, 0xfff6dd]), 1.6, 0.8));
+    this.fx.emit({ x: 0, y: 0, texture: tex.spark, count: 260, color: [0xffffff, dawnGlow, ...branchColors], speed: [300, 1500], life: [0.6, 1.8], size: [0.4, 0.9], drag: 1.6, stretch: 0.0025 });
+    this.fx.emit({ x: 0, y: 0, texture: tex.star4, count: 80, color: [0xffffff, dawnGlow], speed: [60, 600], life: [1, 2.4], size: [0.3, 0.7], spin: [-3, 3], drag: 1.2 });
+    if (crown) this.fx.emit({ x: 0, y: 0, texture: tex.frag, count: 36, color: [0xd6ccff, 0xff5f7e, 0xffffff], speed: [120, 650], life: [0.9, 1.8], size: [0.5, 0.9], sizeEnd: 0.2, drag: 1.8, spin: [-8, 8] });
+    for (let i = 0; i < 4; i++) gsap.delayedCall(i * 0.15, () => this.shockRing(0, 0, 60, 900 + i * 300, pick(dawnPal), 1.6, 0.8));
     gsap.fromTo(this, { dawnR: 0 }, { dawnR: 4600, duration: 2.8, ease: 'power2.out' });
     gsap.to(this, { darkAlpha: 0, duration: 2.4, delay: 1.2, ease: 'power2.inOut' });
     // nodes flare as the dawn passes over them
@@ -1217,7 +1228,7 @@ export class TreeScene {
       if (owned.length) {
         const nv = pick(owned);
         const a = rand(0, TAU);
-        this.fx.emit({ x: nv.x + Math.cos(a) * nv.r, y: nv.y + Math.sin(a) * nv.r, texture: textures().dot, count: 1, color: nv.def.kind === 'core' ? 0xffe0a0 : nv.color, speed: [8, 26], angle: [a - 0.5, a + 0.5], life: [1.2, 2.4], size: [0.12, 0.26], alpha: 0.8, drag: 0.4, fadeIn: 0.2 });
+        this.fx.emit({ x: nv.x + Math.cos(a) * nv.r, y: nv.y + Math.sin(a) * nv.r, texture: textures().dot, count: 1, color: nv.def.kind === 'core' ? (this.tree.id === 'crown' ? 0xd8ccff : 0xffe0a0) : nv.color, speed: [8, 26], angle: [a - 0.5, a + 0.5], life: [1.2, 2.4], size: [0.12, 0.26], alpha: 0.8, drag: 0.4, fadeIn: 0.2 });
       }
     }
     this.fx.update(dt);
@@ -1238,35 +1249,39 @@ export class TreeScene {
   }
 
   // ───────────────────────────────────────────── unweaving
-  private tryUnweave(nv: NodeView) {
+  private tryUnweave(nv: NodeView, cascade = false) {
     if (!this.tree.light || nv.def.kind === 'core') return;
-    const res = this.game.unweaveNode(nv.def.id);
+    const res = this.game.unweaveNode(nv.def.id, cascade);
     if (!res.ok) {
-      if (res.reason !== 'fixed') this.deny(nv);
+      if ('reason' in res && res.reason !== 'fixed') this.deny(nv);
       return;
     }
     this.darken(nv, res);
   }
 
   /** A star goes dark: its light collapses inward, the refund runs home to the root. */
-  private darken(nv: NodeView, res: Extract<UnweaveResult, { ok: true }>) {
+  private darken(nv: NodeView, res: Extract<UnweaveResult | CascadeUnweaveResult, { ok: true }>) {
     const tex = textures();
     const reduced = this.game.state.settings.reducedMotion;
-    const { x, y, r, color } = nv;
+    const { x, y, r } = nv;
     const segs = this.pathSegs(nv.def.id);
+    const extra = 'nodes' in res ? res.nodes.filter((d) => d.id !== nv.def.id) : [];
     this.sync();
     this.showTooltip();
     audio.deny();
     gsap.delayedCall(0.12, () => audio.reveal(1));
-    gsap.fromTo(nv, { punch: 1.25 }, { punch: 1, duration: 0.6, ease: 'elastic.out(1, 0.4)' });
-    this.shockRing(x, y, r * 3, r * 0.6, color, 0.5, 0.6);
-    if (!reduced) {
-      // sparks fall inward and go out
-      for (let i = 0; i < 18; i++) {
-        const a = (i / 18) * TAU;
-        const R = r * 3.2;
-        this.fx.emit({ x: x + Math.cos(a) * R, y: y + Math.sin(a) * R, texture: tex.spark, count: 1, color: [color, 0xffffff], angle: [a + Math.PI - 0.05, a + Math.PI + 0.05], speed: [R / 0.4, R / 0.4], life: [0.4, 0.4], size: [0.3, 0.45], sizeEnd: 0, drag: 0, stretch: 0.003 });
+    for (const d of [nv, ...extra.map((k) => this.nodes.get(k.id)).filter((v): v is NodeView => !!v)]) {
+      gsap.fromTo(d, { punch: 1.25 }, { punch: 1, duration: 0.6, ease: 'elastic.out(1, 0.4)' });
+      this.shockRing(d.x, d.y, d.r * 3, d.r * 0.6, d.color, 0.5, 0.6);
+      if (!reduced) {
+        for (let i = 0; i < 14; i++) {
+          const a = (i / 14) * TAU;
+          const R = d.r * 3.2;
+          this.fx.emit({ x: d.x + Math.cos(a) * R, y: d.y + Math.sin(a) * R, texture: tex.spark, count: 1, color: [d.color, 0xffffff], angle: [a + Math.PI - 0.05, a + Math.PI + 0.05], speed: [R / 0.4, R / 0.4], life: [0.4, 0.4], size: [0.3, 0.45], sizeEnd: 0, drag: 0, stretch: 0.003 });
+        }
       }
+    }
+    if (!reduced) {
       this.startTrace(segs, { color: this.tree.id === 'crown' ? 0xd8ccff : 0xffd77a, size: 0.6, vmax: 1700, accel: 6000 });
     }
     const parts: string[] = [];

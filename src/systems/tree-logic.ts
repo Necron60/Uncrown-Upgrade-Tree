@@ -45,10 +45,11 @@ export function isUnlocked(def: NodeDef, levels: Record<string, number>): boolea
   return def.parents.filter((p) => isOwned(levels, p)).length >= needed(def);
 }
 
-/** The player can see the node and its requirements. */
-export function isRevealed(def: NodeDef, levels: Record<string, number>): boolean {
+/** The player can see the node and its requirements. In limited-light trees, unsealed rings are visible for planning. */
+export function isRevealed(def: NodeDef, levels: Record<string, number>, tree?: TreeDef, p?: TreeProgress): boolean {
   if (isOwned(levels, def.id) || def.parents.length === 0) return true;
-  return def.parents.some((p) => isOwned(levels, p));
+  if (tree?.light && p && !gateOf(tree, def, p)) return true;
+  return def.parents.some((pId) => isOwned(levels, pId));
 }
 
 /** The trial that still seals this node's ring, if any. */
@@ -73,9 +74,9 @@ export function nodeState(tree: TreeDef, def: NodeDef, p: TreeProgress): NodeSta
   const lvl = level(levels, def.id);
   if (lvl >= def.maxLevel) return lvl > 0 && def.maxLevel > 1 ? 'maxed' : 'owned';
   if (lvl > 0) return 'owned';
-  if (!isRevealed(def, levels)) {
+  if (!isRevealed(def, levels, tree, p)) {
     // one step past the frontier: show a mysterious silhouette
-    return def.parents.some((id) => isRevealed(tree.map[id], levels)) ? 'silhouette' : 'hidden';
+    return def.parents.some((id) => isRevealed(tree.map[id], levels, tree, p)) ? 'silhouette' : 'hidden';
   }
   if (sealedBy(tree, def, levels)) return 'sealed';
   if (gateOf(tree, def, p)) return 'gated';
@@ -178,13 +179,16 @@ export function spentOn(def: NodeDef, lvl: number): Cost {
 export function refundOf(def: NodeDef, lvl: number): Cost {
   const s = spentOn(def, lvl);
   const out: Cost = {};
-  for (const k of Object.keys(s) as Currency[]) out[k] = Math.floor((s[k] ?? 0) * UNWEAVE_REFUND);
+  for (const k of Object.keys(s) as Currency[]) {
+    const rate = k === 'prism' ? 1 : UNWEAVE_REFUND;
+    out[k] = Math.floor((s[k] ?? 0) * rate);
+  }
   return out;
 }
 
 export type UnweaveResult = { ok: true; refund: Cost; hidden: string[] } | { ok: false; reason: 'unlit' | 'fixed' | 'needed'; by?: NodeDef };
 
-/** Mutates progress: the node goes dark, three quarters of its price comes back. */
+/** Mutates progress: the node goes dark, three quarters of its common cost (and all rare cost) comes back. */
 export function unweave(tree: TreeDef, def: NodeDef, p: TreeProgress): UnweaveResult {
   const block = unweaveBlock(tree, def, p);
   if (block === 'unlit' || block === 'fixed') return { ok: false, reason: block };
@@ -199,6 +203,68 @@ export function unweave(tree: TreeDef, def: NodeDef, p: TreeProgress): UnweaveRe
     return before.get(n.id) !== now && (now === 'hidden' || now === 'silhouette');
   }).map((n) => n.id);
   return { ok: true, refund, hidden };
+}
+
+/** Lit nodes (ordered outside-in) that must be unwoven to unweave `def`. Empty if `def` cannot be unwoven. */
+export function cascadeUnweaveList(tree: TreeDef, def: NodeDef, p: TreeProgress): NodeDef[] {
+  if (!tree.light || def.kind === 'core' || def.kind === 'awaken' || !isOwned(p.levels, def.id)) return [];
+  const without: Record<string, number> = { ...p.levels };
+  const drop: NodeDef[] = [];
+  const dropped = new Set<string>();
+  const remove = (id: string) => {
+    if (dropped.has(id) || !isOwned(without, id)) return;
+    const node = tree.map[id];
+    if (!node || node.kind === 'core' || node.kind === 'awaken') return;
+    without[id] = 0;
+    dropped.add(id);
+    for (const cId of tree.children[id] ?? []) {
+      const child = tree.map[cId];
+      if (child && isOwned(without, cId) && !isUnlocked(child, without)) remove(cId);
+    }
+    drop.push(node);
+  };
+  remove(def.id);
+  return drop;
+}
+
+/** Preview of unweaving `def` plus every dependent star above it. */
+export function cascadePreview(tree: TreeDef, def: NodeDef, p: TreeProgress): { nodes: NodeDef[]; refund: Cost; light: number } {
+  const nodes = cascadeUnweaveList(tree, def, p);
+  const refund: Cost = {};
+  let light = 0;
+  for (const n of nodes) {
+    const r = refundOf(n, level(p.levels, n.id));
+    if (r.lumen) refund.lumen = (refund.lumen ?? 0) + r.lumen;
+    if (r.prism) refund.prism = (refund.prism ?? 0) + r.prism;
+    light += lightCost(n);
+  }
+  return { nodes, refund, light };
+}
+
+export type CascadeUnweaveResult =
+  | { ok: true; nodes: NodeDef[]; refund: Cost; hidden: string[] }
+  | { ok: false; reason: 'unlit' | 'fixed' };
+
+/** Unweave `def` and every star that relies on it, from the outside in. */
+export function unweaveCascade(tree: TreeDef, def: NodeDef, p: TreeProgress): CascadeUnweaveResult {
+  if (!tree.light || def.kind === 'core' || def.kind === 'awaken') return { ok: false, reason: 'fixed' };
+  if (!isOwned(p.levels, def.id)) return { ok: false, reason: 'unlit' };
+  const nodes = cascadeUnweaveList(tree, def, p);
+  const before = snapshot(tree, p);
+  const refund: Cost = {};
+  for (const n of nodes) {
+    const r = refundOf(n, level(p.levels, n.id));
+    p.lumen += r.lumen ?? 0;
+    p.prism += r.prism ?? 0;
+    if (r.lumen) refund.lumen = (refund.lumen ?? 0) + r.lumen;
+    if (r.prism) refund.prism = (refund.prism ?? 0) + r.prism;
+    delete p.levels[n.id];
+  }
+  const hidden = tree.nodes.filter((n) => {
+    const now = nodeState(tree, n, p);
+    return before.get(n.id) !== now && (now === 'hidden' || now === 'silhouette');
+  }).map((n) => n.id);
+  return { ok: true, nodes, refund, hidden };
 }
 
 // ───────────────────────────────────────────── trials
@@ -228,6 +294,18 @@ export const trialMet = (t: TrialDef, r: TrialRun) => trialProgress(t, r) >= t.g
 
 /** Trials passed so far: the void grows more hostile with every gate. */
 export const depthOf = (p: TreeProgress) => p.trials.length;
+
+export function keystonesOwned(tree: TreeDef, levels: Record<string, number>): number {
+  return tree.keystones.filter((k) => isOwned(levels, k)).length;
+}
+
+/** True when all ring gates are open and the required keystones are lit to wake the boss trial. */
+export function bossReady(tree: TreeDef, p: TreeProgress): boolean {
+  const heart = tree.trials?.find((t) => t.goal.kind === 'boss');
+  if (!heart || p.trials.includes(heart.id)) return false;
+  if (!tree.trials!.every((t) => t === heart || p.trials.includes(t.id))) return false;
+  return keystonesOwned(tree, p.levels) >= (tree.bossKeystones ?? 0);
+}
 
 // ───────────────────────────────────────────── queries
 export function statsFor(tree: TreeDef, levels: Record<string, number>): Stats {
